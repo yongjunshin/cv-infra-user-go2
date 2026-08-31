@@ -1,0 +1,148 @@
+# Consumer verify.yml — the `cv-infra-user-go2` INSTANCE of the platform-owned
+# template (source of truth: cv-infra-workspace/.github/workflows/verify.yml header,
+# D-H — consumed here as contract + release ref ONLY, never as a relative-path source
+# reference).
+#
+# Consumer story (CV-User charter §1): a robot-SW project pushes a PR; CI builds its
+# robot image (SUT), hands cv-infra an image REF + scenario declarations, and gets
+# back a Check + sticky comment + artifacts on the PR (DoD-P5-01/02).
+#
+# PROVENANCE: this file is the carter fixture's live-proven workflow
+# (cv-infra-user/.github/workflows/verify.yml — 7+ real PR runs) copied with the
+# smallest possible go2 delta:
+#   1. image name  carter-sut -> go2-sut
+#   2. the staging list is EMPTY (stage-0: no scenario exists yet — the T0 scenario
+#      lands in U1 together with the C1 map), plus the guard described below.
+#   3. the GPU job is skipped while that list is empty, so a PR opened during
+#      bootstrap still builds the SUT image but never claims a verification.
+# Everything else — action SHA pins, cache wiring, permissions, job-level `uses:` —
+# is inherited unchanged, deliberately.
+#
+# SECURITY (D-J / R10): plain `pull_request` trigger ONLY — never its privileged
+# base-context variant. The SUT reaches the GPU box as an image REF only; the GPU job
+# never checks out PR-head source (scenario YAMLs travel as an artifact).
+#
+# PINS (§2-7): every marketplace `uses:` is an immutable commit SHA (trailing comment
+# = the semver tag it carries), inherited verbatim from the carter fixture where they
+# were resolved against the GitHub tag API on 2026-08-21 and then run live. The
+# platform is consumed via its release tag `@v1` (M8 §3.6: the Action tag axis is a
+# moving major tag by design — the one sanctioned non-SHA ref).
+
+name: cv-infra-verify
+
+on:
+  pull_request: # plain pull_request only (D-J) — never the privileged base-context variant
+
+jobs:
+  # ── Job 1: build the go2 SUT image (GitHub-hosted, GPU-free) ─────────────────
+  # SUT build is OUTSIDE the cv-infra boundary (REQ-EXEC-004: the platform takes a
+  # pre-built image ref). GHCR push uses the workflow GITHUB_TOKEN (M8 §2).
+  # NOTE (D2): the image is only PART of the go2 SUT — the locomotion policy is the
+  # other part and travels in the request (`sut.locomotion_policy`), staged below
+  # next to the scenario, not baked into this image.
+  build-sut:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # GHCR push via GITHUB_TOKEN — no PAT
+    outputs:
+      # Digest-pinned ref (immutable) — the only thing cv-infra receives (R10).
+      image_ref: ghcr.io/${{ github.repository }}/go2-sut@${{ steps.build.outputs.digest }}
+      # 0 while the shipping list below is empty -> the verify job is skipped.
+      staged_files: ${{ steps.stage.outputs.staged_files }}
+    steps:
+      - name: Check out PR head (consumer repo — never reaches the GPU box)
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      # Buildx with the `docker-container` driver. REQUIRED by the cache wiring
+      # below: the default `docker` driver supports no cache exporter but `inline`,
+      # so `cache-to: type=gha` cannot run without this step.
+      - name: Set up Buildx (docker-container driver — prerequisite for cache export)
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `type=gha` = the GitHub Actions cache backend (10 GB/repo); `mode=max` also
+      # caches intermediate stages, which is what keeps the heavy nav2 apt layers
+      # reusable across pushes (measured on the carter fixture: build-sut 3m29s ->
+      # 29s, GHCR upload 582 MB -> 3 kB on a repeat push).
+      # `ignore-error=true`: a cache-export outage must not fail an already-pushed
+      # image and starve the GPU verification job of its input.
+      - name: Build and push go2 SUT image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: robot_sw
+          push: true
+          tags: ghcr.io/${{ github.repository }}/go2-sut:pr-${{ github.event.pull_request.number }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max,ignore-error=true
+
+      # Stage the verification inputs for the GPU job, under a single root so the
+      # artifact PRESERVES the `scenarios/` prefix (upload-artifact roots the artifact
+      # at the least common ancestor of its paths): the reusable workflow downloads it
+      # into its CWD, where the default glob `scenarios/*.yaml` must match AND exit-2
+      # annotation `file=` paths must equal the PR-diff-relative paths.
+      #
+      # ⚠ THIS LIST IS THE DELIVERY, not `scenarios/` (G-94): the GPU job never checks
+      # out PR-head source (R10), so a file that is not copied here does not exist for
+      # the verification — silently absent, never an error. Two guards below:
+      #   (a) `set -euo pipefail` — once the list is non-empty, a cp of a file that was
+      #       renamed/deleted FAILS the job loudly instead of shipping a short delivery;
+      #   (b) empty list -> the upload step and the whole GPU verify job are SKIPPED
+      #       with a loud warning, so bootstrap PRs cannot silently "pass" a
+      #       verification that never ran.
+      - name: Stage verification inputs
+        id: stage
+        run: |
+          set -euo pipefail
+          mkdir -p ci-inputs/scenarios
+          # ── SHIPPING LIST — fill in when the T0 scenario lands (U1) ──────────────
+          # The go2 SUT's verification inputs are: the scenario YAML(s), the custom
+          # oracle plugins they reference (hold_near_goal.py / upright.py, U3), and
+          # the locomotion policy file the request pins (`sut.locomotion_policy`, D2).
+          # cp scenarios/go2_t0_smoke.yaml   ci-inputs/scenarios/
+          # cp scenarios/hold_near_goal.py   ci-inputs/scenarios/
+          # cp scenarios/upright.py          ci-inputs/scenarios/
+          # cp scenarios/policy.pt           ci-inputs/scenarios/
+          # ────────────────────────────────────────────────────────────────────────
+          staged_files=$(find ci-inputs/scenarios -type f | wc -l)
+          echo "staged_files=${staged_files}" >> "$GITHUB_OUTPUT"
+          if [ "${staged_files}" -eq 0 ]; then
+            echo "::warning title=cv-infra bootstrap::No verification inputs staged (stage-0). The SUT image was built and pushed, but the GPU verification job is SKIPPED. Add the scenario to the shipping list in .github/workflows/verify.yml (U1)."
+          else
+            find ci-inputs -type f -printf '%p\t%s bytes\n'
+          fi
+
+      - name: Upload verification inputs
+        if: steps.stage.outputs.staged_files != '0'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: cv-infra-verification-inputs # reusable input `scenarios_artifact` default
+          path: ci-inputs/
+
+  # ── Job 2: verify on the GPU workstation (platform-owned reusable workflow) ──
+  # Job-level `uses:` (D-H): this job carries NO runs-on/steps — the platform's
+  # verify.yml IS the job definition (runner selection via its `runner_label` input).
+  # Everything below the `uses:` line is the whole integration surface a consumer
+  # maintains (REQ-INTAKE-003).
+  verify:
+    needs: build-sut
+    # stage-0 guard: nothing to verify until the shipping list above is non-empty.
+    if: needs.build-sut.outputs.staged_files != '0'
+    permissions:
+      checks: write # Check Run posting
+      pull-requests: write # sticky comment upsert
+      contents: read
+    uses: yongjunshin/cv-infra-workspace/.github/workflows/verify.yml@v1
+    with:
+      sut_image: ${{ needs.build-sut.outputs.image_ref }} # ghcr.io/<repo>/go2-sut@sha256:… (R10 ref-only)
+      scenarios: scenarios/*.yaml
+      runner_label: cv-infra-gpu
+      # `api` left at its default (same-host orchestrator, M8 §8 g5 MVP topology).
+      # `timeout_s` left at its default (3600).

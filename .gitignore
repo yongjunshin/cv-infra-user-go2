@@ -1,0 +1,20 @@
+# ROS 2 colcon build artifacts
+build/
+install/
+log/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+
+# NOTE: model weights are deliberately NOT ignored here. The locomotion policy
+# (`sut.locomotion_policy`, decision 2026-08-31 D2) may legitimately be committed
+# next to its scenario, and an ignore rule would make it SILENTLY absent from the
+# verification inputs (the G-94 failure mode). yolo11n (U2) is not committed either
+# way — it is fetched by digest at image build time and sealed into the image (D1-A).
