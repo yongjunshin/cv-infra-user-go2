@@ -1,4 +1,4 @@
-# go2_nav.launch.py — headless Nav2 bringup for the Unitree Go2 patrol SUT (stage-0).
+# go2_nav.launch.py — headless Nav2 bringup for the Unitree Go2 patrol SUT.
 #
 # do-not-reinvent: this is assembly glue, NOT a reimplementation. It composes
 # `nav2_bringup/bringup_launch.py` (apt ros-jazzy-nav2-bringup, pinned in the
@@ -11,13 +11,16 @@
 #       @ /navigate_to_pose                                             (REQ-EXEC-007)
 #   - subscribes /scan + /odom, publishes /cmd_vel                      (REQ-EXEC-006)
 #
-# STAGE-0 / NO MAP YET. The static map for the go2 warehouse is a platform C1
-# deliverable and has not landed. `map` therefore defaults to '' and, while it is
-# empty, LOCALIZATION IS DISABLED: map_server and amcl do not start (upstream
-# `use_localization` argument, present in nav2_bringup 1.3.12 — verified in the
-# pinned deb, not assumed). The nav stack itself still comes up, which is exactly
-# what the U0 headless dry-run checks. Passing `map:=/path/to/map.yaml` re-enables
-# localization with no change to this file (that is U1's first move).
+# MAP (U1). `map` now defaults to this package's vendored occupancy grid
+# (../maps/carter_warehouse_navigation.yaml — see ../maps/README.md for its upstream
+# commit + digests and for WHY the carter map is the right map for the go2 scene), so
+# map_server + amcl come up by default and the robot localizes in the same frame the
+# scenarios express their goals in.
+#
+# `use_localization:=False` still means "run the nav stack WITHOUT localization"
+# (upstream argument, present in nav2_bringup 1.3.12 — verified in the pinned deb, not
+# assumed). That is the U0 dry-run mode and stays available for bringing the stack up
+# against a sim that has no map.
 #
 # Local development (the 1st-class requirement, master plan §1-8): this launch is
 # plain ROS 2 — `ros2 launch go2_bringup go2_nav.launch.py` works against the
@@ -43,16 +46,27 @@ def generate_launch_description():
     default_params_file = PathJoinSubstitution(
         [FindPackageShare("go2_bringup"), "params", "nav2_params.yaml"]
     )
+    default_map_file = PathJoinSubstitution(
+        [FindPackageShare("go2_bringup"), "maps", "carter_warehouse_navigation.yaml"]
+    )
 
     use_sim_time = LaunchConfiguration("use_sim_time")
     map_yaml = LaunchConfiguration("map")
     params_file = LaunchConfiguration("params_file")
     autostart = LaunchConfiguration("autostart")
 
-    # Localization (map_server + amcl) runs only when a map was actually supplied.
-    # Evaluates to the string 'True'/'False', which is what bringup_launch.py's own
+    # Localization (map_server + amcl) runs unless the caller says otherwise, and is
+    # off automatically when the map was blanked out. The default is a Substitution
+    # evaluating to the string 'True'/'False', which is what bringup_launch.py's own
     # PythonExpression condition concatenates.
-    use_localization = PythonExpression(['"', map_yaml, '" != ""'])
+    #
+    # It is a real ARGUMENT (not just this expression) because `map:=''` is NOT
+    # expressible on the `ros2 launch` command line — the CLI rejects an empty value
+    # ("malformed launch argument 'map:=', expected format '<name>:=<value>'",
+    # measured 2026-09-01). Without this argument, the no-map bring-up mode would only
+    # be reachable from another launch file, which is not where a developer stands.
+    map_given = PythonExpression(['"', map_yaml, '" != ""'])
+    use_localization = LaunchConfiguration("use_localization")
 
     return LaunchDescription(
         [
@@ -63,10 +77,19 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "map",
-                default_value="",
+                default_value=default_map_file,
                 description=(
-                    "Full path to the static map yaml. EMPTY (stage-0 default) = run "
-                    "the nav stack WITHOUT localization; map_server/amcl do not start."
+                    "Full path to the static map yaml. Defaults to this package's "
+                    "vendored warehouse grid."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "use_localization",
+                default_value=map_given,
+                description=(
+                    "Start map_server + amcl. Defaults to True whenever a map is set "
+                    "(it is by default). `use_localization:=False` brings up the nav "
+                    "stack alone — the no-map mode, e.g. against a sim with no map."
                 ),
             ),
             DeclareLaunchArgument(
@@ -89,9 +112,9 @@ def generate_launch_description():
             LogInfo(
                 condition=UnlessCondition(use_localization),
                 msg=(
-                    "[go2_bringup] no `map:=` given -> localization DISABLED "
-                    "(map_server/amcl not started). stage-0 default; pass a map yaml "
-                    "once the C1 map artifact lands."
+                    "[go2_bringup] localization DISABLED (map_server/amcl not "
+                    "started). The nav stack still comes up; drop "
+                    "`use_localization:=False` to localize on the vendored map."
                 ),
             ),
             IncludeLaunchDescription(

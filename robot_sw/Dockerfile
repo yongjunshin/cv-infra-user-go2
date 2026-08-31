@@ -5,12 +5,10 @@
 # its `ros2` adapter over a shared docker network (DDS). This repo's job is only to
 # make the SUT "behave so it can be verified" (SUT contract, see ../README.md).
 #
-# STATUS: **stage-0** (U0 bootstrap) — navigation only: Nav2 + AMCL/map_server, no
-# perception. The detector (torch-cpu + ultralytics + yolo11n) lands in U2 at the
-# marked placeholder below; the target tracker / patrol manager land in U3. There is
-# no map and no scenario yet (platform cycle C1 produces the map artifact, C3 the
-# topic inventory), so this image currently brings up the nav stack with
-# localization DISABLED — see launch/go2_nav.launch.py.
+# STATUS: **navigation stage** (U0 bootstrap + U1 map/tuning) — Nav2 + AMCL/map_server
+# with the warehouse occupancy grid vendored into go2_bringup, no perception. The
+# detector (torch-cpu + ultralytics + yolo11n) lands in U2 at the marked placeholder
+# below; the target tracker / patrol manager land in U3.
 #
 # The Go2's SUT is NOT this image alone: SUT = {image_ref, locomotion_policy}
 # (decision 2026-08-31 D2). The locomotion policy runs in-process on the runner

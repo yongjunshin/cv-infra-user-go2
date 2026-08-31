@@ -11,10 +11,10 @@
 # (cv-infra-user/.github/workflows/verify.yml — 7+ real PR runs) copied with the
 # smallest possible go2 delta:
 #   1. image name  carter-sut -> go2-sut
-#   2. the staging list is EMPTY (stage-0: no scenario exists yet — the T0 scenario
-#      lands in U1 together with the C1 map), plus the guard described below.
-#   3. the GPU job is skipped while that list is empty, so a PR opened during
-#      bootstrap still builds the SUT image but never claims a verification.
+#   2. the staging list ships the go2 scenarios AND `policy.pt` — the Go2's SUT is
+#      two artifacts (D2), and the second one travels in the request, not the image.
+#   3. the empty-list guard below stays, so if the list is ever emptied the GPU job
+#      is skipped loudly instead of "passing" a verification that never ran.
 # Everything else — action SHA pins, cache wiring, permissions, job-level `uses:` —
 # is inherited unchanged, deliberately.
 #
@@ -102,19 +102,25 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ci-inputs/scenarios
-          # ── SHIPPING LIST — fill in when the T0 scenario lands (U1) ──────────────
+          # ── SHIPPING LIST (U1) ──────────────────────────────────────────────────
           # The go2 SUT's verification inputs are: the scenario YAML(s), the custom
           # oracle plugins they reference (hold_near_goal.py / upright.py, U3), and
-          # the locomotion policy file the request pins (`sut.locomotion_policy`, D2).
-          # cp scenarios/go2_t0_smoke.yaml   ci-inputs/scenarios/
-          # cp scenarios/hold_near_goal.py   ci-inputs/scenarios/
-          # cp scenarios/upright.py          ci-inputs/scenarios/
-          # cp scenarios/policy.pt           ci-inputs/scenarios/
+          # the locomotion policy file the requests pin (`sut.locomotion_policy`, D2).
+          #
+          # ⚠ policy.pt is NOT optional and NOT part of the image: the Go2's SUT is
+          # {image, locomotion policy} (D2), the platform holds no policy, and a
+          # missing file is a rejected request (exit 2). Forgetting this line breaks
+          # every go2 scenario at admit, not at runtime.
+          cp scenarios/go2_t0_smoke.yaml       ci-inputs/scenarios/
+          cp scenarios/go2_ta_nav_random.yaml  ci-inputs/scenarios/
+          cp scenarios/policy.pt               ci-inputs/scenarios/
+          # cp scenarios/hold_near_goal.py     ci-inputs/scenarios/   # U3
+          # cp scenarios/upright.py            ci-inputs/scenarios/   # U3
           # ────────────────────────────────────────────────────────────────────────
           staged_files=$(find ci-inputs/scenarios -type f | wc -l)
           echo "staged_files=${staged_files}" >> "$GITHUB_OUTPUT"
           if [ "${staged_files}" -eq 0 ]; then
-            echo "::warning title=cv-infra bootstrap::No verification inputs staged (stage-0). The SUT image was built and pushed, but the GPU verification job is SKIPPED. Add the scenario to the shipping list in .github/workflows/verify.yml (U1)."
+            echo "::warning title=cv-infra::No verification inputs staged. The SUT image was built and pushed, but the GPU verification job is SKIPPED. Restore the cp lines in the shipping list in .github/workflows/verify.yml."
           else
             find ci-inputs -type f -printf '%p\t%s bytes\n'
           fi
@@ -133,7 +139,7 @@ jobs:
   # maintains (REQ-INTAKE-003).
   verify:
     needs: build-sut
-    # stage-0 guard: nothing to verify until the shipping list above is non-empty.
+    # Guard: nothing to verify if the shipping list above ever ends up empty.
     if: needs.build-sut.outputs.staged_files != '0'
     permissions:
       checks: write # Check Run posting

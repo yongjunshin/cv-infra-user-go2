@@ -1,0 +1,163 @@
+# go2_t0_smoke.yaml — the Go2 consumer's smoke request (U1).
+#
+# The story: "walk the Go2 6 m up the warehouse aisle to a goal, without colliding."
+# One sample, no randomization — this is the document every other go2 scenario is a
+# variation of, and the one the CI gate runs on every PR.
+#
+# This file INSTANTIATES the platform-owned Scenario shape (M1). The consumer does not
+# define the schema; it exercises it. Every value below is either MEASURED by the
+# platform (cited inline) or COMPUTED from this repo's own vendored map — nothing is
+# typed from taste.
+#
+# ── SUT = TWO artifacts (decision 2026-08-31 D2) ──────────────────────────────────
+# The Go2's SUT is {app image, locomotion policy}. The image is the nav container this
+# repo builds; the policy is `policy.pt` sitting next to this file, declared under
+# `sut` (NOT `scenario`) so that swapping it reads as "the same request against a
+# different SUT" on the regression axis. The platform holds no policy and substitutes
+# nothing: a missing file or a digest mismatch is a rejected request (exit 2).
+#
+# ── Why the initial pose faces the goal (AR-16 ①) ────────────────────────────────
+# The locomotion policy executes IN-PLACE yaw at 6 % of the commanded rate, but turns
+# at 91 % while walking (platform C2b §6-1, four control experiments attributing this
+# to the checkpoint, not the wiring). So the mission starts already pointing up the
+# aisle: nav2 then only ever has to steer, never to pivot. The same measurement is why
+# ../robot_sw/src/go2_bringup/ ships a Spin-free recovery tree and an orientation-free
+# goal checker.
+#
+# ── Why the goal tolerance is 1.0 m ──────────────────────────────────────────────
+# See `position_tolerance_m` below. Short version: the carter consumer measured 0.75 m
+# of AMCL+nav2 residual on THIS map, and the Go2 adds a ~0.94 m policy-activation
+# transient (C2b §6-2) that the carter never had.
+
+apiVersion: cv-infra/v1
+
+scenario:
+  scene: go2_warehouse                   # platform scene registry name (D-1). Composes the SAME
+                                         #   warehouse + extras the carter sample uses, plus the Go2
+                                         #   -> the vendored carter occupancy map transfers (AR-13).
+  robot: go2
+  initial_pose:                          # applied to /World/Go2 by the runner; z is the runner's
+    x: -6.0                              #   (spawn drop 0.32 m, measured C1 §3-3 — not a scenario field).
+    y: -1.0                              # (x, y) = the aisle start the carter fixture has used since
+    yaw: 1.5708                          #   cycle-5; map clearance HERE = 1.35 m (computed from
+                                         #   ../robot_sw/src/go2_bringup/maps/*.png, trinary thresholds
+                                         #   + distance transform).
+                                         # yaw = pi/2 = facing the goal (AR-16 ①, see header).
+                                         # ⚠ The policy's activation transient carries the robot ~0.94 m
+                                         #   ALONG this heading before it settles (C2b §6-2, reproducible
+                                         #   to 3 decimals) -> the mission effectively starts near
+                                         #   (-6.0, -0.06), where map clearance is 2.35 m. Still free.
+  goal:
+    x: -6.0                              # Straight up the same aisle: 6.0 m from the declared spawn,
+    y: 5.0                               #   ~5.1 m from where the robot actually settles. Clearance
+    yaw: 1.5708                          #   along the lane y in [0.5, 5.0] is 2.7-2.8 m (computed from
+    frame: map                           #   the vendored map), i.e. no turn, no squeeze, no doorway.
+                                         # This is the SAME goal the carter consumer has been running
+                                         #   live since cycle-5 in the same warehouse — a route already
+                                         #   known to be drivable, so a failure here is about the Go2.
+                                         # `yaw` is sent to nav2 as the goal orientation, but the
+                                         #   VERDICT ignores it: no `goal_orientation_wxyz` is declared
+                                         #   below, and the goal checker is orientation-free (AR-16 ①).
+  seed: 42                               # determinism input (REQ-EXEC-003, NFR-EXEC-001)
+  timeout_s: 180                         # SIM-time mission budget. 6 m at the measured 0.4957 m/s is
+                                         #   ~12 s of walking; the rest is headroom for AMCL settling,
+                                         #   costmap warm-up and one recovery round.
+
+execution_settings:
+  fixed_dt: 0.005                        # 200 Hz physics = the policy's TRAINING condition (policy 50 Hz
+                                         #   with 4x decimation). Platform decision A4/D-4, adopted on
+                                         #   C2b's measurement: stable gait, 99 % command tracking, and a
+                                         #   byte-identical 2-run GT trajectory at this dt.
+
+sut:
+  # WORKSTATION-LOCAL tag for the U1 manual bring-up. In CI this value is NEVER read —
+  # .github/workflows/verify.yml injects the image the PR just built and pushed to GHCR
+  # (priority: --sut-image flag > $CV_INFRA_SUT_IMAGE > this value). It is the standalone
+  # default, so it must name an image that exists wherever you run this by hand.
+  # ⚠ Replace with the GHCR digest ref once the CI loop publishes one (C4).
+  image_ref: go2-sut:u1-dev
+  locomotion_policy:                     # 2nd SUT artifact (D2). Rides WITH the request: the file must
+    file: policy.pt                      #   sit next to this yaml (the supervisor ro-mounts that dir).
+    sha256: 73338e49c3f1932bbcb9cf54e97ef71a9cac24bb2bb214217aa8b592cb9442fd
+                                         # Source: the Isaac Lab `go2_flat` pre-trained export
+                                         #   (VLA-WS checkpoints/go2_flat_pretrained/exported/policy.pt,
+                                         #   174,184 B). Digest re-verified on copy into this repo.
+                                         #   Platform re-hashes it at admit AND at load; a mismatch is
+                                         #   exit 2, never a silent fallback.
+
+interface:
+  type: ros2                             # REQ-EXEC-004 (only ros2 in the MVP)
+  adapter_config:                        # M1 canonical Ros2AdapterConfig; VALUES = the platform's
+                                         #   measured go2 topic inventory (C3 §2 / §2-1). NOT copied
+                                         #   from the carter fixture — the go2 world is published by
+                                         #   the runner itself, and its inventory is different.
+    ros_distro: jazzy
+    rmw: rmw_fastrtps_cpp
+    use_sim_time: true                   # the SUT image launches with use_sim_time:=true (REQ-EXEC-003)
+    goal_interface:                      # REQ-EXEC-007 — server = nav2 bt_navigator today; U3's
+      kind: action                       #   patrol_manager will expose the same action and remap
+      name: /navigate_to_pose            #   nav2's inward (D4), so this block does not change.
+      type: nav2_msgs/action/NavigateToPose
+    cmd_vel:                             # SUT publishes -> the locomotion policy consumes it in the
+      topic: /cmd_vel                    #   runner (the sim has no vendor ROS graph for this robot).
+      type: geometry_msgs/msg/Twist      #   nav2's collision_monitor is the final publisher.
+    clock_topic: /clock                  # sim publishes every step (200 Hz sim-time at this fixed_dt)
+    odom_topics:                         # 30 Hz, ground truth (drift 0 — the runner publishes it from
+      - /odom                            #   the GT pose). One topic: nav2 here reads the default /odom
+                                         #   everywhere (unlike the carter, which needed two).
+    sensors:                             # sim publishes -> SUT subscribes (REQ-EXEC-006).
+      - topic: /scan                     # 3200 beams, 360 deg, 10 Hz sim-time, RPLIDAR_S2E config
+        type: sensor_msgs/msg/LaserScan  #   (platform AR-10 selection, C3 §3-1 comparison of 6 configs).
+                                         # ⚠ DECLARING a sensor is what makes the runner publish it.
+                                         #   The camera streams (rgb/depth/camera_info) are deliberately
+                                         #   NOT declared here: nothing in this stage subscribes to them,
+                                         #   and each render product costs real time (C3 measured RTF
+                                         #   0.318 with all four streams on). U2's detector adds them.
+    frames:                              # = the platform defaults; spelled out because the frame ids are
+      map: map                           #   the contract between AMCL (publishes map->odom) and the sim
+      odom: odom                         #   (publishes odom->base_link + the static sensor frames).
+      base_link: base_link               #   ../robot_sw/.../nav2_params.yaml is aligned to these.
+    readiness:                           # G-19: the action server is DDS-discoverable while still
+      is_active_service: /lifecycle_manager_navigation/is_active   # inactive, so gate on this instead.
+
+acceptance_criteria:                     # MVP: reach the goal in time AND never collide (REQ-EXEC-011)
+  - oracle: reached_goal                 # REQ-EXEC-010/012 — judged on GT samples, first-reach semantics
+    params:
+      position_tolerance_m: 1.0
+      # WHERE 1.0 COMES FROM — two terms, BOTH MEASURED on this SUT (U1 live run):
+      #   0.50  the SUT's own `general_goal_checker.xy_goal_tolerance`
+      #         (../robot_sw/src/go2_bringup/params/nav2_params.yaml DELTA 11). nav2
+      #         stops when its ESTIMATE is this close, so the GT residual starts here.
+      #   0.39  the AMCL belief error measured at the goal: belief (-6.276, 4.708) vs
+      #         ground truth (-5.938, 4.896) at the same instant = 0.387 m.
+      #   sum = 0.89 m, and 1.0 is the round number above it.
+      # The verdict is not actually riding that sum: `reached_goal` is FIRST-REACH over
+      # the GT trajectory, and the live run passed within **0.018 m** of the goal. The
+      # sum is what bounds the WORST case, which is what a threshold should be built on.
+      # FOLLOW-UP (C4): with both terms now measured, this constant can become the
+      # structural form the platform prefers —
+      #   goal_tolerance_budget: {sut_xy_goal_tolerance_m: 0.5, localization_budget_m: 0.5}
+      # (CEO D-6: derive the threshold from declared budgets instead of raising a
+      # constant). Left as a constant here because one live sample is not a budget yet.
+      #
+      # No `goal_orientation_wxyz`: this mission has no final-heading requirement, so the
+      # yaw check stays inactive (and `yaw_tolerance_rad` is therefore not declared —
+      # a knob that judges nothing should not appear to).
+  - oracle: no_collision                 # REQ-EXEC-010/011 (collision_count == 0)
+    params:
+      chassis_path: /World/Go2/base      # C1 §2 verbatim: the articulation root (RigidBody +
+                                         #   ArticulationRoot + PhysxArticulationAPI). Since AR-12 the
+                                         #   reduction matches the whole ROBOT SUBTREE anchored here, so
+                                         #   leg<->obstacle contact counts too — which is what "the robot
+                                         #   collided" has to mean for a quadruped (C1 measured a
+                                         #   flipped-over run scoring 0 before that fix).
+                                         # Also consumed by the platform's dev-world as the SENSOR MOUNT
+                                         #   point, so it must be present even when nothing is judged.
+      collision_excluded_paths:          # C1 §2 verbatim — the floor is TWO prims and their spellings
+        - /World/GroundPlane/collisionPlane                                  # differ in case.
+        - /World/Warehouse_Empty_small_realtime/GroundPlane/CollisionPlane   # Declaring only one makes
+                                         #   normal walking fail: 1930 foot/calf<->floor contacts per run.
+                                         # The robot's own subtree is NOT excluded (self-collision is off
+                                         #   on this asset — C1 §6-4 — so there is nothing to exclude),
+                                         #   and `/World/cv_obstacles` is deliberately NOT excluded: an
+                                         #   obstacle the robot walks into MUST count.
