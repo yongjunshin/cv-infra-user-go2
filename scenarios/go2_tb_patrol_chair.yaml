@@ -144,9 +144,12 @@ acceptance_criteria:
                                          #   error at the goal) = 0.89, rounded up.
   - oracle: no_collision                 # built-in: and it did so without touching anything
     params:
-      chassis_path: /World/Go2/base      # robot-subtree anchor (AR-12): leg<->chair contact
+      chassis_path: /World/Go2/base      # the subtree anchor the reduction walks down from
+      collision_scope: robot             # AR-25 — declared, not assumed: leg<->chair contact
                                          #   COUNTS, which is what "collided" means for a
                                          #   quadruped that touches the world with its feet.
+                                         #   The default "chassis" scope would see none of it
+                                         #   (rationale in go2_t0_smoke.yaml).
       collision_excluded_paths:          # ONLY the floor (two prims, different spellings —
         - /World/GroundPlane/collisionPlane                                  # C1 §2 verbatim).
         - /World/Warehouse_Empty_small_realtime/GroundPlane/CollisionPlane

@@ -122,7 +122,10 @@ acceptance_criteria:                     # identical to T0 — the verdict rule 
       position_tolerance_m: 1.0          # see go2_t0_smoke.yaml for the two measured terms behind it
   - oracle: no_collision
     params:
-      chassis_path: /World/Go2/base      # robot-subtree anchor (AR-12): leg<->crate contact COUNTS
+      chassis_path: /World/Go2/base      # the subtree anchor the reduction walks down from
+      collision_scope: robot             # AR-25 — declared, not assumed: leg<->crate contact COUNTS.
+                                         #   Drop it and the default "chassis" scope sees none of it
+                                         #   (rationale in go2_t0_smoke.yaml).
       collision_excluded_paths:          # floor only — `/World/cv_obstacles` is deliberately not here,
         - /World/GroundPlane/collisionPlane                                  # because walking into a
         - /World/Warehouse_Empty_small_realtime/GroundPlane/CollisionPlane   # crate must fail.

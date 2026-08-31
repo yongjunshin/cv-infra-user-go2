@@ -146,17 +146,25 @@ acceptance_criteria:                     # MVP: reach the goal in time AND never
   - oracle: no_collision                 # REQ-EXEC-010/011 (collision_count == 0)
     params:
       chassis_path: /World/Go2/base      # C1 §2 verbatim: the articulation root (RigidBody +
-                                         #   ArticulationRoot + PhysxArticulationAPI). Since AR-12 the
-                                         #   reduction matches the whole ROBOT SUBTREE anchored here, so
-                                         #   leg<->obstacle contact counts too — which is what "the robot
-                                         #   collided" has to mean for a quadruped (C1 measured a
-                                         #   flipped-over run scoring 0 before that fix).
+                                         #   ArticulationRoot + PhysxArticulationAPI). It is also the
+                                         #   ANCHOR the reduction below walks down from.
                                          # Also consumed by the platform's dev-world as the SENSOR MOUNT
                                          #   point, so it must be present even when nothing is judged.
+      collision_scope: robot             # AR-25 — WHAT counts as "the robot" is DECLARED, not assumed.
+                                         #   The platform default is "chassis" (the anchor prim itself),
+                                         #   which is right for a wheeled robot and blind for this one: a
+                                         #   quadruped touches the world with feet and calves, never with
+                                         #   its base, so C1 measured a flipped-over run scoring
+                                         #   collision_count == 0. "robot" reduces over the whole subtree
+                                         #   under chassis_path, so leg<->obstacle contact counts — which
+                                         #   is what "the robot collided" has to mean here.
+                                         # ⚠ Remove this line and that C1 defect comes straight back.
       collision_excluded_paths:          # C1 §2 verbatim — the floor is TWO prims and their spellings
         - /World/GroundPlane/collisionPlane                                  # differ in case.
         - /World/Warehouse_Empty_small_realtime/GroundPlane/CollisionPlane   # Declaring only one makes
-                                         #   normal walking fail: 1930 foot/calf<->floor contacts per run.
+                                         #   normal walking fail: 1930 foot/calf<->floor contacts per run
+                                         #   — a cost that comes WITH the scope above, which is what makes
+                                         #   foot<->floor pairs candidates at all.
                                          # The robot's own subtree is NOT excluded (self-collision is off
                                          #   on this asset — C1 §6-4 — so there is nothing to exclude),
                                          #   and `/World/cv_obstacles` is deliberately NOT excluded: an

@@ -106,6 +106,9 @@ acceptance_criteria:                     # identical to the chair document — t
   - oracle: no_collision
     params:
       chassis_path: /World/Go2/base
+      collision_scope: robot             # AR-25 — same as the chair document (rationale in
+                                         #   go2_t0_smoke.yaml). The criteria must stay identical
+                                         #   to it: what makes this fixture fail is the budget.
       collision_excluded_paths:
         - /World/GroundPlane/collisionPlane
         - /World/Warehouse_Empty_small_realtime/GroundPlane/CollisionPlane
