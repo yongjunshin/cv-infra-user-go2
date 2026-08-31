@@ -5,12 +5,13 @@
 # its `ros2` adapter over a shared docker network (DDS). This repo's job is only to
 # make the SUT "behave so it can be verified" (SUT contract, see ../README.md).
 #
-# STATUS: **navigation + perception stage** (U0 bootstrap, U1 map/tuning, U2 detector) —
+# STATUS: **full patrol stage** (U0 bootstrap, U1 map/tuning, U2 detector, U3 patrol) —
 # Nav2 + AMCL/map_server with the warehouse occupancy grid vendored into go2_bringup,
-# plus `go2_detector` (yolo11n, CPU) reading /camera/image_raw and publishing
-# /detections. The target tracker / patrol manager land in U3; nothing launches the
-# detector yet (U3 owns the perception bringup), it runs with
-# `ros2 run go2_detector detector_node`.
+# `go2_detector` (yolo11n, CPU) /camera/image_raw -> /detections, `go2_target_tracker`
+# (C++) /detections + depth + TF -> /targets, and `go2_patrol_manager` (C++) which
+# EXPOSES the platform-facing /navigate_to_pose itself and remaps nav2's own action
+# inward (decision D4). The default CMD is the patrol launch; with no camera declared in
+# the scenario (T0/TA) the manager degrades to plain navigation, loudly.
 #
 # The Go2's SUT is NOT this image alone: SUT = {image_ref, locomotion_policy}
 # (decision 2026-08-31 D2). The locomotion policy runs in-process on the runner
@@ -156,8 +157,11 @@ ENV YOLO_CONFIG_DIR=/tmp/ultralytics \
 WORKDIR /opt/robot_sw
 
 # --- our own packages: go2_bringup (install-only, ament_cmake) + go2_detector
-#   (ament_python — the node itself; torch/ultralytics came from pip above) ---
+#   (ament_python) + go2_target_tracker / go2_patrol_manager (ament_cmake, C++ — U3) ---
 #   Kept last so an edit to launch/params/node code does not invalidate the heavy layers.
+#   The two C++ packages compile against ros-base's own rclcpp/tf2/nav2_msgs/vision_msgs;
+#   they add NO apt layer, which is what keeps them below the `dpkg --force-depends`
+#   line above (after it, `apt-get install` refuses to run — measured, see layer 2/3).
 COPY src/ /opt/go2_ws/src/
 RUN . /opt/ros/jazzy/setup.sh \
     && colcon build --merge-install --install-base /opt/go2_ws/install \
@@ -170,9 +174,14 @@ RUN chmod +x /opt/robot_sw/ros_entrypoint.sh
 # --- SUT contract the blackbox satisfies so cv-infra can verify it (see ../README.md) ---
 #   - accept use_sim_time:=true, driven by external /clock                (REQ-EXEC-003)
 #   - expose goal interface nav2_msgs/action/NavigateToPose
-#       @ /navigate_to_pose  (stage-0: nav2 bt_navigator; U3: patrol_manager
-#       re-exposes it and remaps nav2's own action inward — D4)            (REQ-EXEC-007)
+#       @ /navigate_to_pose  (U3: go2_patrol_manager serves it and nav2's own action is
+#       remapped inward to /nav2/navigate_to_pose — D4)                    (REQ-EXEC-007)
 #   - publish /cmd_vel + subscribe sensor topics                          (REQ-EXEC-006)
 #   cv-infra injects use_sim_time at launch; this image stays unmodified by it (REQ-EXEC-005).
 ENTRYPOINT ["/opt/robot_sw/ros_entrypoint.sh"]
-CMD ["ros2", "launch", "go2_bringup", "go2_nav.launch.py", "use_sim_time:=true"]
+# One image, one CMD (the platform passes an image REF and nothing else — SutRef has no
+# command field), so the SAME launch serves both mission shapes: with a camera declared in
+# the scenario it patrols, without one the manager falls back to plain navigation. The
+# nav-only launch is still there for hand runs:
+#   ros2 launch go2_bringup go2_nav.launch.py use_sim_time:=true
+CMD ["ros2", "launch", "go2_bringup", "go2_patrol.launch.py", "use_sim_time:=true"]

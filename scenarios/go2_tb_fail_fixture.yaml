@@ -1,0 +1,119 @@
+# go2_tb_fail_fixture.yaml — the INTENTIONAL-FAIL patrol fixture (U3).
+#
+# ⚠ THIS DOCUMENT IS SUPPOSED TO FAIL. It is `go2_tb_patrol_chair.yaml` with the sim-time
+# mission budget cut from 180 s to 8 s — less than half the walk to the target takes — so
+# the robot is still on its patrol route when the platform cancels the goal. Expected
+# verdict fail, **exit code 1**, `reached_goal` "not_reached" and `hold_near_goal`
+# "left_goal".
+#
+# What it is FOR (the carter fixture has the same thing —
+# cv-infra-user/scenarios/nova_carter_warehouse_obstacle_fail.yaml):
+#   * it proves the pipeline can say NO. A verification harness that has never produced a
+#     red result on purpose has not been shown to be able to;
+#   * it is the fastest possible check that a fresh deployment is wired end to end
+#     (`cv-infra run` this, expect exit 1);
+#   * it is the negative control for the two custom oracles: the same criteria that pass
+#     in the chair document must fail here, for the RIGHT reason (read the per-criterion
+#     detail strings in result.json, not just the verdict).
+#
+# ⚠ IT IS DELIBERATELY NOT IN THE CI SHIPPING LIST (.github/workflows/verify.yml): staging
+# it would turn every PR red by design. Same call, same reason, as the carter fixture's
+# intentional-fail scenario. Run it by hand:
+#   cv-infra run scenarios/go2_tb_fail_fixture.yaml --runner-image <runner>; echo $?   # 1
+#
+# Everything not commented here is identical to go2_tb_patrol_chair.yaml — read that file
+# for the mission story and the provenance of every coordinate.
+
+apiVersion: cv-infra/v1
+
+scenario:
+  scene: go2_warehouse
+  robot: go2
+  initial_pose:                          # STATIC here, unlike the chair document: a fixture
+    x: -6.0                              #   whose job is to fail must fail for one reason
+    y: -1.0                              #   only, so no axis is randomized.
+    yaw: 1.5708
+  goal:
+    x: -6.0                              # the same verdict anchor as the chair document
+    y: 3.2
+    yaw: 1.5708
+    frame: map
+  seed: 42
+  timeout_s: 8                           # ⚠ THE FAILURE, and the number is MEASURED, not
+                                         #   picked: the live mission takes 18 s of sim time
+                                         #   (U3 report §6-3) and the robot covers 3.5 m in
+                                         #   12.4 s of it (0.28 m/s including the waypoint
+                                         #   transition). At 8 s it is ~2 m up the aisle and
+                                         #   ~1.7 m from the goal — outside `reached_goal`'s
+                                         #   1.0 m and outside `hold_near_goal`'s radius.
+                                         #   ⚠ An earlier draft said 25 s; that would have let
+                                         #   the mission FINISH (18 s) and the "fail fixture"
+                                         #   would have passed. Fixtures need measurements too.
+  obstacles:
+    - asset: chair
+      count: 1
+      x: -6.0
+      y: 5.2
+      yaw: -1.5708                       # still facing the robot: the fixture must fail on
+                                         #   TIME, not because the target was unrecognisable.
+                                         # no distractors: one variable, one failure.
+
+execution_settings:
+  fixed_dt: 0.005                        # no `repeats`/`min_pass_ratio`: one sample, one verdict
+
+sut:
+  image_ref: go2-sut:u3
+  locomotion_policy:
+    file: policy.pt
+    sha256: 73338e49c3f1932bbcb9cf54e97ef71a9cac24bb2bb214217aa8b592cb9442fd
+
+interface:                               # identical to the chair document
+  type: ros2
+  adapter_config:
+    ros_distro: jazzy
+    rmw: rmw_fastrtps_cpp
+    use_sim_time: true
+    goal_interface:
+      kind: action
+      name: /navigate_to_pose
+      type: nav2_msgs/action/NavigateToPose
+    cmd_vel:
+      topic: /cmd_vel
+      type: geometry_msgs/msg/Twist
+    clock_topic: /clock
+    odom_topics:
+      - /odom
+    sensors:
+      - topic: /camera/image_raw
+        type: sensor_msgs/msg/Image
+      - topic: /camera/depth/image_raw
+        type: sensor_msgs/msg/Image
+      - topic: /camera/camera_info
+        type: sensor_msgs/msg/CameraInfo
+      - topic: /scan
+        type: sensor_msgs/msg/LaserScan
+    frames:
+      map: map
+      odom: odom
+      base_link: base_link
+    readiness:
+      is_active_service: /lifecycle_manager_navigation/is_active
+
+acceptance_criteria:                     # identical to the chair document — that is the point:
+  - oracle: reached_goal                 #   the criteria are not what makes this fail.
+    params:
+      position_tolerance_m: 1.0
+  - oracle: no_collision
+    params:
+      chassis_path: /World/Go2/base
+      collision_excluded_paths:
+        - /World/GroundPlane/collisionPlane
+        - /World/Warehouse_Empty_small_realtime/GroundPlane/CollisionPlane
+  - oracle: "hold_near_goal:HoldNearGoalOracle"
+    params:
+      hold_radius_m: 1.0
+      hold_duration_s: 4.0
+  - oracle: "upright:UprightOracle"
+    params:
+      max_roll_rad: 0.5
+      max_pitch_rad: 0.5

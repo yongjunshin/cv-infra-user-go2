@@ -11,8 +11,9 @@
 # (cv-infra-user/.github/workflows/verify.yml — 7+ real PR runs) copied with the
 # smallest possible go2 delta:
 #   1. image name  carter-sut -> go2-sut
-#   2. the staging list ships the go2 scenarios AND `policy.pt` — the Go2's SUT is
-#      two artifacts (D2), and the second one travels in the request, not the image.
+#   2. the staging list ships the go2 scenarios, the two custom oracle plugins AND
+#      `policy.pt` — the Go2's SUT is two artifacts (D2), and the second one travels
+#      in the request, not the image.
 #   3. the empty-list guard below stays, so if the list is ever emptied the GPU job
 #      is skipped loudly instead of "passing" a verification that never ran.
 # Everything else — action SHA pins, cache wiring, permissions, job-level `uses:` —
@@ -102,7 +103,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ci-inputs/scenarios
-          # ── SHIPPING LIST (U1) ──────────────────────────────────────────────────
+          # ── SHIPPING LIST (U1, extended U3) ─────────────────────────────────────
           # The go2 SUT's verification inputs are: the scenario YAML(s), the custom
           # oracle plugins they reference (hold_near_goal.py / upright.py, U3), and
           # the locomotion policy file the requests pin (`sut.locomotion_policy`, D2).
@@ -111,11 +112,22 @@ jobs:
           # {image, locomotion policy} (D2), the platform holds no policy, and a
           # missing file is a rejected request (exit 2). Forgetting this line breaks
           # every go2 scenario at admit, not at runtime.
-          cp scenarios/go2_t0_smoke.yaml       ci-inputs/scenarios/
-          cp scenarios/go2_ta_nav_random.yaml  ci-inputs/scenarios/
-          cp scenarios/policy.pt               ci-inputs/scenarios/
-          # cp scenarios/hold_near_goal.py     ci-inputs/scenarios/   # U3
-          # cp scenarios/upright.py            ci-inputs/scenarios/   # U3
+          #
+          # ⚠ The two oracle .py files are equally NOT optional: the TB scenarios
+          # reference them as `module:Class` next to the YAML, and a missing plugin is
+          # a rejected request at admit (exit 2), not a skipped criterion.
+          cp scenarios/go2_t0_smoke.yaml         ci-inputs/scenarios/
+          cp scenarios/go2_ta_nav_random.yaml    ci-inputs/scenarios/
+          cp scenarios/go2_tb_patrol_chair.yaml  ci-inputs/scenarios/
+          cp scenarios/go2_tb_patrol_person.yaml ci-inputs/scenarios/
+          cp scenarios/hold_near_goal.py         ci-inputs/scenarios/
+          cp scenarios/upright.py                ci-inputs/scenarios/
+          cp scenarios/policy.pt                 ci-inputs/scenarios/
+          # NOT SHIPPED, on purpose: `scenarios/go2_tb_fail_fixture.yaml` is the
+          # intentional-FAIL fixture (25 s budget). Staging it would turn every PR red
+          # by design — the same call, for the same reason, the carter fixture makes
+          # about its own obstacle_fail scenario. It stays in `scenarios/` and is run by
+          # hand (`cv-infra run …; echo $?` -> 1).
           # ────────────────────────────────────────────────────────────────────────
           staged_files=$(find ci-inputs/scenarios -type f | wc -l)
           echo "staged_files=${staged_files}" >> "$GITHUB_OUTPUT"

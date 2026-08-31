@@ -1,0 +1,121 @@
+# go2_tb_patrol_person.yaml — the Go2 consumer's PATROL request, target = person (U3).
+#
+# The SAME document as go2_tb_patrol_chair.yaml with ONE axis moved: the target class.
+# Read that file's header for the mission story, why the goal is a verdict anchor and not
+# a search hint, and where every coordinate comes from. Only the differences live here.
+#
+# Why both exist: they are the consumer-side proof that the SUT's mission generalises over
+# its target and that the platform contract does not move when it does. Nothing in the
+# runner, the adapter or the oracles knows which of the two is being patrolled.
+#
+# ── The one real difference: this target has no preferred bearing ─────────────────
+# * A chair only reads as `chair` from the front (0.834 front / 0 behind, platform C0
+#   §6-5), so the chair scenario has to pin its yaw. A standing person reads as `person`
+#   at 0.79-0.87 from every angle measured (C0 A13, U2 §4-2 across 15 frames), so `yaw`
+#   here is free and set to 0 — one axis of arbitrariness removed from the fixture.
+# * The asset spawns in BIND POSE (arms out) and is therefore **1.76 m wide** and 1.73 m
+#   tall (platform C0 §6-9, W0 census). Both matter:
+#     - width: it stands in an aisle whose free-space clearance is 2.70 m, so its arms
+#       have 0.9 m of air on each side. It is not a doorway.
+#     - height: at the app's 2.0 m standoff a 1.73 m person spans ~317 px, i.e. 0.66 of the
+#       frame — comfortably over the hold condition's 0.25, with no per-class threshold
+#       anywhere in the app. (The standoff itself was measured on the CHAIR, which is the
+#       harder target: see go2_tb_patrol_chair.yaml's header for the distance/confidence
+#       table that fixed it at 2.0 m.)
+
+apiVersion: cv-infra/v1
+
+scenario:
+  scene: go2_warehouse
+  robot: go2
+  initial_pose:                          # identical window to the chair scenario (U1's)
+    x: {uniform: [-6.3, -5.7]}
+    y: {uniform: [-1.3, -0.7]}
+    yaw: {uniform: [1.4208, 1.7208]}
+  goal:
+    x: -6.0                              # 2.0 m in front of the person = the verdict anchor
+    y: 3.2                               #   (= the app's measured standoff, see chair doc)
+    yaw: 1.5708
+    frame: map
+  seed: 43                               # a different draw than the chair document, on purpose:
+                                         #   two scenarios that only ever see the same three
+                                         #   start poses would be one scenario run twice.
+  timeout_s: 180                         # as the chair document (same route, same distances)
+  obstacles:
+    - asset: person                      # platform registry name (added for this mission —
+      count: 1                           #   master plan §1-6); F_Business_02, z_offset 0.1248
+      x: -6.0                            #   applied by the runner so the feet land on 0.0.
+      y: 5.2                             # 0.8 m beyond the goal, same as the chair.
+      yaw: 0.0                           # free: detection is bearing-independent for a person
+    - asset: box
+      count: {randint: [0, 2]}
+      x: {uniform: [-3.5, -2.5]}
+      y: {uniform: [1.0, 2.0]}
+    - asset: desk
+      count: {randint: [0, 1]}
+      x: {uniform: [-3.5, -2.5]}
+      y: {uniform: [3.0, 4.0]}
+
+execution_settings:
+  repeats: 3
+  min_pass_ratio: 0.67
+  fixed_dt: 0.005
+
+sut:
+  image_ref: go2-sut:u3
+  locomotion_policy:
+    file: policy.pt
+    sha256: 73338e49c3f1932bbcb9cf54e97ef71a9cac24bb2bb214217aa8b592cb9442fd
+
+interface:                               # byte-identical to the chair document: the interface
+  type: ros2                             #   is exactly what this pair must NOT vary.
+  adapter_config:
+    ros_distro: jazzy
+    rmw: rmw_fastrtps_cpp
+    use_sim_time: true
+    goal_interface:
+      kind: action
+      name: /navigate_to_pose
+      type: nav2_msgs/action/NavigateToPose
+    cmd_vel:
+      topic: /cmd_vel
+      type: geometry_msgs/msg/Twist
+    clock_topic: /clock
+    odom_topics:
+      - /odom
+    sensors:
+      - topic: /camera/image_raw
+        type: sensor_msgs/msg/Image
+      - topic: /camera/depth/image_raw
+        type: sensor_msgs/msg/Image
+      - topic: /camera/camera_info
+        type: sensor_msgs/msg/CameraInfo
+      - topic: /scan
+        type: sensor_msgs/msg/LaserScan
+    frames:
+      map: map
+      odom: odom
+      base_link: base_link
+    readiness:
+      is_active_service: /lifecycle_manager_navigation/is_active
+
+acceptance_criteria:                     # identical to the chair document — the verdict rule
+  - oracle: reached_goal                 #   must not move when the target class does.
+    params:
+      position_tolerance_m: 1.0
+  - oracle: no_collision
+    params:
+      chassis_path: /World/Go2/base
+      collision_excluded_paths:
+        - /World/GroundPlane/collisionPlane
+        - /World/Warehouse_Empty_small_realtime/GroundPlane/CollisionPlane
+                                         # the person is NOT excluded: a patrol robot that
+                                         #   walks into the person it found has failed.
+  - oracle: "hold_near_goal:HoldNearGoalOracle"
+    params:
+      hold_radius_m: 1.0                 # see the chair document for where 1.0 comes from
+      hold_duration_s: 4.0               #   (< the app's own 5.0 s confirmation hold)
+  - oracle: "upright:UprightOracle"
+    params:
+      max_roll_rad: 0.5
+      max_pitch_rad: 0.5
