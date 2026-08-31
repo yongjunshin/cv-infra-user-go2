@@ -1,0 +1,68 @@
+# constraints-detector.txt — the pip half of the SUT image, fully pinned.
+#
+# WHY THIS FILE EXISTS (AR-11, measured again here on 2026-09-01):
+#   `pip install ultralytics` does NOT respect a torch pin that was installed before it.
+#   Resolution of `ultralytics==8.4.136` on this base image, with NOTHING pre-installed,
+#   pulls **torch 2.13.0 (CUDA build) + triton + 16 nvidia-* wheels** (measured with
+#   `pip install --dry-run --report`, U2 report §3). That is several GB of CUDA runtime
+#   inside a container the platform deliberately gives NO GPU to (decision 2026-08-31
+#   D1-P2: user model compute never lands on the verification host's GPU ledger).
+#   Installing the CPU wheels first is NOT enough by itself — torchvision from PyPI is
+#   the CUDA build and drags a matching CUDA torch back in. This file is what makes the
+#   pin stick, and the Dockerfile turns it into a build-time assertion (a CUDA torch
+#   fails the build, it does not merely warn).
+#
+# The numpy pin is a second, separate trap: unconstrained, pip installs numpy 2.5.2 into
+# /usr/local and it SHADOWS the distro numpy 1.26.4 that every ROS 2 Jazzy C extension on
+# this image was built against. Pinning to the distro version means pip resolves
+# "already satisfied" and installs nothing (which is also why opencv-python backtracks
+# from 5.0.0.93 to 4.11.0.86 — the last release that accepts numpy 1.x).
+# setuptools is pinned for the same reason: colcon's ament_python build runs setup.py
+# with the distro setuptools (68.1.2); a pip-installed newer one would shadow it.
+#
+# HOW TO REGENERATE (do not hand-edit versions):
+#   1. build the image without `-c` on the two pip layers,
+#   2. `docker run --rm <img> python3 -c "from importlib.metadata import distributions;
+#      [print(f'{d.metadata[\"Name\"]}=={d.version}') for d in distributions()
+#       if str(d._path).startswith('/usr/local/')]"` (= the pip-installed set only),
+#   3. paste the sorted result below and re-add the two distro guards at the bottom.
+#
+# Measured 2026-09-01 on ros:jazzy-ros-base-noble@sha256:31daab66… (python 3.12.3).
+
+# --- the pip-installed set (32 distributions) ---
+anyio==4.14.2
+certifi==2026.7.22
+charset-normalizer==3.5.1
+contourpy==1.3.3
+cycler==0.12.1
+filelock==3.32.3
+fonttools==4.64.0
+fsspec==2026.7.0
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.19
+Jinja2==3.1.6
+kiwisolver==1.5.1
+MarkupSafe==3.0.3
+matplotlib==3.11.1
+mpmath==1.3.0
+networkx==3.6.1
+nvidia-ml-py==13.610.43
+opencv-python==4.11.0.86
+pillow==12.3.0
+polars==1.44.1
+polars-runtime-32==1.44.1
+requests==2.34.2
+sympy==1.14.0
+torch==2.8.0+cpu
+torchvision==0.23.0+cpu
+typing_extensions==4.16.0
+ultralytics==8.4.136
+ultralytics-platform==0.1.20
+ultralytics-thop==2.1.6
+urllib3==2.7.0
+
+# --- distro guards: these must stay the apt copies, pip must not replace them ---
+numpy==1.26.4
+setuptools==68.1.2

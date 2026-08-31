@@ -5,10 +5,12 @@
 # its `ros2` adapter over a shared docker network (DDS). This repo's job is only to
 # make the SUT "behave so it can be verified" (SUT contract, see ../README.md).
 #
-# STATUS: **navigation stage** (U0 bootstrap + U1 map/tuning) — Nav2 + AMCL/map_server
-# with the warehouse occupancy grid vendored into go2_bringup, no perception. The
-# detector (torch-cpu + ultralytics + yolo11n) lands in U2 at the marked placeholder
-# below; the target tracker / patrol manager land in U3.
+# STATUS: **navigation + perception stage** (U0 bootstrap, U1 map/tuning, U2 detector) —
+# Nav2 + AMCL/map_server with the warehouse occupancy grid vendored into go2_bringup,
+# plus `go2_detector` (yolo11n, CPU) reading /camera/image_raw and publishing
+# /detections. The target tracker / patrol manager land in U3; nothing launches the
+# detector yet (U3 owns the perception bringup), it runs with
+# `ros2 run go2_detector detector_node`.
 #
 # The Go2's SUT is NOT this image alone: SUT = {image_ref, locomotion_policy}
 # (decision 2026-08-31 D2). The locomotion policy runs in-process on the runner
@@ -53,7 +55,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ros-jazzy-navigation2="${NAVIGATION2_VERSION}" \
     && rm -rf /var/lib/apt/lists/*
 
-# Layer 2/2: nav2_bringup LAUNCH package only (bringup/navigation/localization launch +
+# Layer 2/3 (U2): the ROS message package the detector publishes + pip itself.
+#   `vision_msgs` is NOT in ros-base (without it `go2_detector` cannot even import) and
+#   ros-base ships no pip at all (measured 2026-09-01: `command -v pip3` is empty).
+#   ⚠ THIS MUST STAY ABOVE the nav2_bringup layer: `dpkg --force-depends` below leaves
+#   the dpkg database with unmet dependencies, and from that point on **every**
+#   `apt-get install` refuses to run (`E: Unmet dependencies`, exit 100 — measured
+#   2026-09-01 when this layer sat after it). Only `apt-get download` + `dpkg
+#   --force-depends` still work afterwards. So: anything that needs apt's resolver goes
+#   here; anything installed with force-depends goes below.
+ARG PYTHON3_PIP_VERSION=24.0+dfsg-1ubuntu1.3
+ARG VISION_MSGS_VERSION=4.1.1-3noble.20260615.113052
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ros-jazzy-vision-msgs="${VISION_MSGS_VERSION}" \
+      python3-pip="${PYTHON3_PIP_VERSION}" \
+    && rm -rf /var/lib/apt/lists/*
+
+# Layer 3/3: nav2_bringup LAUNCH package only (bringup/navigation/localization launch +
 #   the stock params/BT XML our launch composes — do-not-reinvent). Installed WITHOUT
 #   its Gazebo/sim hard-Depends (nav2-minimal-tb3/tb4-sim, ros-gz-sim/bridge,
 #   slam-toolbox, xacro, ros2_control controllers = ~0.72 GB the headless SUT never
@@ -65,21 +83,81 @@ RUN apt-get update \
     && rm -f ./ros-jazzy-nav2-bringup_*.deb \
     && rm -rf /var/lib/apt/lists/*
 
-# --- U2 PLACEHOLDER (do not add yet) -----------------------------------------------
-# Perception layer, added in U2 as its OWN split layers (same no-fat-layer rule):
-#   (a) pip layer: torch (CPU wheel index) + ultralytics, exact versions pinned.
-#   (b) model layer: yolo11n weights fetched by URL + verified against a pinned
-#       sha256, then SEALED into the image — decision 2026-08-31 D1-A (build-time
-#       sealing) so a model change shows up as an image-digest change on the
-#       regression axis. CPU inference only; the SUT container never gets a GPU (D1-P2).
-# Nothing is installed here in stage-0 — leaving it empty keeps the stage-0 image
-# pullable and the U2 diff honest.
+# --- perception (U2): yolo11n on CPU, in split layers ------------------------------
+# (the apt half is layer 2/3 above — it has to run while apt's resolver still works)
+# Layer sizes measured 2026-09-01 (`docker history`): vision_msgs+pip 20.7 MB ·
+# libgl 4.82 MB · torch 843 MB · ultralytics 494 MB · yolo11n 5.61 MB. Image total
+# 4.34 GB (stage-0+nav was 2.97 GB). The no-fat-layer rule from stage-0 still holds:
+# torch and ultralytics are never merged into one blob, so the two big pulls resume
+# independently on the GPU runner (assumption A9).
+ARG LIBGLVND_VERSION=1.7.0-1build1
+ARG TORCH_VERSION=2.8.0+cpu
+ARG TORCHVISION_VERSION=0.23.0+cpu
+ARG ULTRALYTICS_VERSION=8.4.136
+# yolo11n weights: pointer + digest in git, bytes sealed into the image at build time
+# (decision 2026-08-31 D1-A). The model is therefore part of the image digest, so a
+# model swap shows up on the regression axis instead of hiding behind an unchanged
+# `sut.image_ref`. Nothing is ever fetched at run time.
+ARG YOLO11N_URL=https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt
+ARG YOLO11N_SHA256=0ebbc80d4a7680d14987a577cd21342b65ecfd94632bd9a8da63ae6417644ee1
+
+# Layer (a): libGL.so.1, which `import cv2` dlopen()s (opencv-python is a hard
+#   ultralytics dependency). Installed with the stage-0 download + `--force-depends`
+#   idiom because plain `apt-get install libgl1` drags in the mesa software-GL driver
+#   and libllvm20 = **194 MB measured** for a headless container that never creates a
+#   GL context; the three libglvnd packages alone are 3 MB and cv2 imports fine
+#   (verified in the build assertion below, not assumed).
+RUN apt-get update \
+    && apt-get download \
+         libglvnd0="${LIBGLVND_VERSION}" \
+         libglx0="${LIBGLVND_VERSION}" \
+         libgl1="${LIBGLVND_VERSION}" \
+    && dpkg --install --force-depends ./libglvnd0_*.deb ./libglx0_*.deb ./libgl1_*.deb \
+    && rm -f ./*.deb \
+    && rm -rf /var/lib/apt/lists/*
+
+# Layer (b): torch + torchvision, CPU wheels, from the CPU-only index.
+COPY constraints-detector.txt /opt/robot_sw/constraints-detector.txt
+RUN pip3 install --no-cache-dir --break-system-packages \
+      --index-url https://download.pytorch.org/whl/cpu \
+      -c /opt/robot_sw/constraints-detector.txt \
+      "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}"
+
+# Layer (c): ultralytics, CONSTRAINED (AR-11). Unconstrained, this line replaces the CPU
+#   torch above with `torch 2.13.0` + triton + 16 nvidia-* CUDA wheels (measured with
+#   `pip install --dry-run --report` — U2 report §3). The assertion at the end is a
+#   build-time GATE, not a log line: a CUDA torch, a shadowed distro numpy or a
+#   non-importable cv2 fails the build.
+RUN pip3 install --no-cache-dir --break-system-packages \
+      -c /opt/robot_sw/constraints-detector.txt \
+      "ultralytics==${ULTRALYTICS_VERSION}" \
+    && pip3 freeze | grep -E '^(torch|torchvision|ultralytics|opencv-python)==' \
+    && python3 -c "\
+import cv2, numpy, torch, ultralytics; \
+assert torch.version.cuda is None, 'CUDA torch leaked in: %s' % torch.version.cuda; \
+assert torch.__version__.endswith('+cpu'), torch.__version__; \
+assert numpy.__file__.startswith('/usr/lib/'), 'pip shadowed the distro numpy: %s' % numpy.__file__; \
+print('CPU-ONLY OK torch', torch.__version__, 'cv2', cv2.__version__, 'numpy', numpy.__version__, 'ultralytics', ultralytics.__version__)"
+
+# Layer (d): the weights. Fetch by URL, verify the pinned digest, seal. A wrong or
+#   moved asset FAILS THE BUILD here rather than silently changing what the SUT sees.
+RUN mkdir -p /opt/models \
+    && curl -fsSL -o /opt/models/yolo11n.pt "${YOLO11N_URL}" \
+    && echo "${YOLO11N_SHA256}  /opt/models/yolo11n.pt" | sha256sum -c -
+
+# ultralytics writes its settings next to the model unless told otherwise, and it will
+# pip-install missing deps mid-run if allowed. A sealed SUT does neither: config goes to
+# a writable tmp dir, and a missing dependency becomes a loud error instead of a network
+# call inside a verification run.
+ENV YOLO_CONFIG_DIR=/tmp/ultralytics \
+    YOLO_AUTOINSTALL=false
 # -----------------------------------------------------------------------------------
 
 WORKDIR /opt/robot_sw
 
-# --- go2_bringup: our own thin bringup package (install-only ament package) ---
-#   Kept last so an edit to launch/params does not invalidate the heavy apt layers.
+# --- our own packages: go2_bringup (install-only, ament_cmake) + go2_detector
+#   (ament_python — the node itself; torch/ultralytics came from pip above) ---
+#   Kept last so an edit to launch/params/node code does not invalidate the heavy layers.
 COPY src/ /opt/go2_ws/src/
 RUN . /opt/ros/jazzy/setup.sh \
     && colcon build --merge-install --install-base /opt/go2_ws/install \

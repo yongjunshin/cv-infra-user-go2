@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>go2_detector</name>
+  <version>0.1.0</version>
+  <description>
+    Thin YOLO11n CPU detector for the Unitree Go2 patrol SUT (cv-infra consumer fixture):
+    /camera/image_raw -> /detections (vision_msgs/Detection2DArray). Mission-agnostic —
+    it publishes every class it sees; target selection belongs to the tracker (U3).
+    torch (CPU wheel) + ultralytics are pip dependencies pinned in
+    ../../constraints-detector.txt; the weights are sealed into the SUT image at build
+    time (decision 2026-08-31 D1-A), never downloaded at runtime.
+  </description>
+  <maintainer email="yjshin@etri.re.kr">CV-User team</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>vision_msgs</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

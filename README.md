@@ -4,22 +4,30 @@ CV-Infra의 **두 번째 소비자 / E2E 픽스처** (public). 첫 번째(`cv-in
 **Unitree Go2 사족보행 순찰 앱**을 SUT로 올려, 같은 플랫폼 계약이 *다른 로봇 · 다른 미션 · 다른 산출물 구성*에서도
 러너 수정 0으로 통하는지를 소비자 입장에서 행사한다.
 
-> **현 상태: 내비게이션 단계(U0 부트스트랩 + U1 맵·시나리오·튜닝).** SUT 이미지는 **Nav2 + AMCL/map_server +
-> 반입된 창고 점유맵**으로 실제 항법이 가능하고, `scenarios/`에 **T0 스모크**와 **TA 랜덤** 검증 요청,
-> 그리고 요청에 실려 가는 **보행 정책 파일**이 있다. 아직 없는 것: 인지(U2), 순찰 상태기계·TB 시나리오·커스텀
-> 오라클(U3). PR을 열면 SUT 이미지를 빌드해 GHCR에 올리고 **T0·TA를 GPU 검증 잡에 배송**한다.
+> **현 상태: 내비게이션 + 인지 단계(U0 부트스트랩 · U1 맵·시나리오·튜닝 · U2 detector).** SUT 이미지는
+> **Nav2 + AMCL/map_server + 반입된 창고 점유맵**으로 실제 항법이 가능하고, **`go2_detector`(YOLO11n CPU)**가
+> `/camera/image_raw`를 받아 `/detections`를 발행한다(가중치는 이미지에 봉인). `scenarios/`에 **T0 스모크**와
+> **TA 랜덤** 검증 요청, 그리고 요청에 실려 가는 **보행 정책 파일**이 있다. 아직 없는 것: 순찰 상태기계·TB
+> 시나리오·커스텀 오라클(U3) — 그래서 **detector를 띄우는 런치는 아직 없다**(U3가 인지 브링업을 소유;
+> 지금은 `ros2 run go2_detector detector_node`로 단독 기동). PR을 열면 SUT 이미지를 빌드해 GHCR에 올리고
+> **T0·TA를 GPU 검증 잡에 배송**한다.
 
 ## 저장소 레이아웃
 
 ```
 robot_sw/
-├── Dockerfile                    # SUT 이미지 (ros:jazzy @digest + Nav2 핀)
-├── ros_entrypoint.sh             # ROS + go2_bringup 오버레이 source 후 exec
-└── src/go2_bringup/              # 설치 전용 ament 패키지 (컴파일 0)
-    ├── launch/go2_nav.launch.py  # nav2_bringup 재사용 + 맵 기본값 + use_localization 스위치
-    ├── params/nav2_params.yaml   # 상류 stock 파라미터 + 측정 근거를 단 go2 델타 10개
-    ├── maps/                     # 반입된 창고 점유맵 + 출처·digest (maps/README.md)
-    └── behavior_trees/           # stock 트리에서 Spin 회복만 뺀 사본 (근거: 제자리 선회 6%)
+├── Dockerfile                    # SUT 이미지 (ros:jazzy @digest + Nav2 핀 + 인지 레이어 4장)
+├── constraints-detector.txt      # pip 전량 핀 (torch CPU 고정 = AR-11 함정 차단)
+├── ros_entrypoint.sh             # ROS + 오버레이 source 후 exec
+├── src/go2_bringup/              # 설치 전용 ament 패키지 (컴파일 0)
+│   ├── launch/go2_nav.launch.py  # nav2_bringup 재사용 + 맵 기본값 + use_localization 스위치
+│   ├── params/nav2_params.yaml   # 상류 stock 파라미터 + 측정 근거를 단 go2 델타 11개
+│   ├── maps/                     # 반입된 창고 점유맵 + 출처·digest (maps/README.md)
+│   └── behavior_trees/           # stock 트리에서 Spin 회복만 뺀 사본 (근거: 제자리 선회 6%)
+└── src/go2_detector/             # ament_python — YOLO11n CPU 검출 노드
+    ├── go2_detector/detection_logic.py   # 순수 로직(스로틀·whitelist·bbox·디코드) — ROS/torch 무의존
+    ├── go2_detector/detector_node.py     # /camera/image_raw -> /detections
+    └── test/                             # 유닛테스트 (python3 -m pytest test)
 scenarios/
 ├── go2_t0_smoke.yaml             # T0 — 정적 1샘플 스모크 (CI 게이트)
 ├── go2_ta_nav_random.yaml        # TA — 출발/목표/장애물 랜덤, 5샘플·pass_ratio 0.8
@@ -27,8 +35,22 @@ scenarios/
 .github/workflows/verify.yml      # 소비자 검증 워크플로 (carter 픽스처의 실전 검증본 계승)
 ```
 
-U2에서 `src/go2_detector`(Python·ultralytics CPU), U3에서 `src/go2_target_tracker`·`src/go2_patrol_manager`(C++)와
-TB 시나리오·커스텀 오라클 2종이 추가된다.
+U3에서 `src/go2_target_tracker`·`src/go2_patrol_manager`(C++)와 TB 시나리오·커스텀 오라클 2종이 추가된다.
+
+### `go2_detector` — 미션을 모르는 얇은 노드
+
+`/camera/image_raw`(`sensor_msgs/Image`) → `/detections`(`vision_msgs/Detection2DArray`). **본 것을 전부
+발행한다** — 표적이 무엇인지는 tracker/manager(U3)가 정한다. 파라미터(전부 `ros2 run … --ros-args -p`로
+덮어쓸 수 있다): `image_topic` · `detections_topic` · `model_path`(기본 `/opt/models/yolo11n.pt`) ·
+`process_rate_hz`(5.0) · `conf_threshold`(0.25) · `class_whitelist`(**빈 값 = 전부**) · `imgsz`(640) ·
+`torch_threads`(2) · `log_period_s`(10.0).
+
+- **스로틀은 이미지 헤더 스탬프(= sim time) 기준**이고 구독 depth는 1이다. 벽시계가 느려도 오래된 프레임이
+  쌓이지 않고, RTF와 무관하게 sim 시간 duty cycle이 같다.
+- **CPU 전용**. SUT 컨테이너에는 GPU가 없다(D1-P2). 실측 지연(이미지 안, 640 px, i9-13900K):
+  1스레드 44.9 ms · **2스레드 25.4 ms(기본값)** · 4스레드 15.4 ms · 8스레드 10.5 ms — 5 Hz 예산 200 ms 대비
+  여유 큼(가정 A10 재확인, 이번엔 **CPU 휠**로).
+- **런타임 다운로드 0.** 가중치는 빌드 때 봉인되고, 검증도 `--network none`에서 돌렸다.
 
 ## SUT 계약 — 이 블랙박스가 무엇을 노출하나
 
@@ -62,6 +84,9 @@ go2의 **SUT = {앱 이미지 `sut.image_ref`, 보행 정책 `sut.locomotion_pol
 # 1) 도커 없이 로컬 빌드 (호스트에 ROS 2 Jazzy 필요)
 source /opt/ros/jazzy/setup.bash
 cd robot_sw && colcon build --symlink-install && source install/setup.bash
+
+# 1b) detector 순수 로직 유닛테스트 — ROS도 모델도 GPU도 필요 없다 (가장 빠른 루프)
+cd robot_sw/src/go2_detector && python3 -m pytest test -q
 
 # 2) 플랫폼의 dev-world 모드로 같은 월드·센서·보행 정책을 띄운다 (미션 구동·판정 없이 유지).
 #    검증 잡과 같은 씬·같은 정책·같은 토픽 표면이고, 같은 admit 게이트를 통과한다.
@@ -106,6 +131,10 @@ admit 단계에서 거부된다(exit 2). 목록이 비면 검증 잡 자체가 s
 | Nav2 BT XML | stock `navigate_to_pose_w_replanning_and_recovery.xml`(sha256 `5895b638…`) − `<Spin>` 1줄 | 파일 헤더에 출처·delta·stock digest |
 | 정적 점유맵 | `carter_navigation` @ `50de0035…`(태그 `IsaacSim-5.1.0`) 원본 바이트 그대로 | `robot_sw/src/go2_bringup/maps/README.md`(URL·커밋·digest·실측 대조) |
 | 보행 정책 | `policy.pt` sha256 `73338e49…` (174,184 B) — Isaac Lab `go2_flat` 사전학습 export | 시나리오 `sut.locomotion_policy`가 digest를 핀; 플랫폼이 admit·load 두 번 재검증 |
+| vision_msgs / pip | apt `ros-jazzy-vision-msgs=4.1.1-3noble.20260615.113052` · `python3-pip=24.0+dfsg-1ubuntu1.3` | 2026-09-01 핀 설치 성공 (ros-base엔 둘 다 없다) |
+| torch / torchvision | `2.8.0+cpu` / `0.23.0+cpu` (CPU 전용 인덱스) | 빌드가 CUDA 빌드를 **거부**한다(어서션) |
+| ultralytics + 전체 pip 트리 | `8.4.136` + `constraints-detector.txt`의 32개 전량 핀 | 파일 헤더에 생성 절차·AR-11 근거 |
+| yolo11n 가중치 | URL + sha256 `0ebbc80d…` (5,613,764 B) → 이미지에 봉인 | 빌드 중 `sha256sum -c` 실패 시 **빌드 중단** |
 | GitHub Action | 전부 commit SHA 핀 (플랫폼만 릴리즈 태그 `@v1`) | carter 픽스처에서 계승 |
 
 ## 경계 규칙
@@ -121,5 +150,5 @@ admit 단계에서 거부된다(exit 2). 목록이 비면 검증 잡 자체가 s
 |---|---|---|
 | **U0** (완료) | 저장소 부트스트랩 + stage-0 이미지 + 브링업 골격 + 워크플로 골격 | — |
 | **U1** (완료) | 맵 반입 · T0/TA 시나리오 · Nav2/AMCL 튜닝 · 정책 파일 반입 · dev-world 상대 풀스택 수동 검증 | 플랫폼 C1(맵)·C2b(정책)·C3(토픽/dev-world) |
-| U2 | `go2_detector` (yolo11n CPU, 이미지 봉인) | C3 프레임 |
+| **U2** (완료) | `go2_detector`(yolo11n CPU, 이미지 봉인) + pip 전량 핀 + 오프라인/라이브 검증 | C3 프레임 |
 | U3 | `go2_target_tracker` + `go2_patrol_manager` + TB 시나리오 + 커스텀 오라클 2종 | U2 |
