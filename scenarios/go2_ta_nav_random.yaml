@@ -85,7 +85,8 @@ execution_settings:
   fixed_dt: 0.005                        # identical to T0 — the policy's training condition (A4/D-4)
 
 sut:                                     # identical to T0 — see go2_t0_smoke.yaml for provenance.
-  image_ref: go2-sut:u1-dev              # CI injects the PR's image; this is the standalone default.
+  image_ref: go2-sut:local               # ONE tag for all five documents (U3c). CI injects the PR's
+                                         #   image over it; `docker build -t go2-sut:local robot_sw/`.
   locomotion_policy:
     file: policy.pt
     sha256: 73338e49c3f1932bbcb9cf54e97ef71a9cac24bb2bb214217aa8b592cb9442fd

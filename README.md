@@ -11,7 +11,8 @@ CV-Infra의 **두 번째 소비자 / E2E 픽스처** (public). 첫 번째(`cv-in
 > `/nav2/navigate_to_pose`로 안쪽에 리맵된다(결정 D4 — **어댑터 계약 변경 0**). `scenarios/`에 T0 스모크 ·
 > TA 랜덤 · **TB 순찰 2종(chair/person)** · **의도적 실패 픽스처** · 커스텀 오라클 2종(`hold_near_goal`,
 > `upright`) · 요청에 실려 가는 보행 정책 파일이 있다. PR을 열면 SUT 이미지를 빌드해 GHCR에 올리고
-> **T0·TA·TB 2종 + 오라클 2종을 GPU 검증 잡에 배송**한다(실패 픽스처는 의도적으로 배송하지 않는다).
+> **T0·TA·TB chair + 오라클 2종을 GPU 검증 잡에 배송**한다(실패 픽스처는 의도적으로 배송하지 않고,
+> **TB person 은 배치 경로 실패가 미해결이라 격리(quarantine)** 되어 있다 — 아래 §CI 게이트).
 
 ## 저장소 레이아웃
 
@@ -42,8 +43,8 @@ scenarios/
 ├── go2_t0_smoke.yaml             # T0 — 정적 1샘플 스모크 (CI 게이트)
 ├── go2_ta_nav_random.yaml        # TA — 출발/목표/장애물 랜덤, 5샘플·pass_ratio 0.8
 ├── go2_tb_patrol_chair.yaml      # TB — 순찰(표적 chair), 3샘플·pass_ratio 0.67
-├── go2_tb_patrol_person.yaml     # TB — 순찰(표적 person), 같은 문서에서 표적 클래스만 다름
-├── go2_tb_fail_fixture.yaml      # ⚠ 의도적 실패(예산 25 s) — CI 배송 목록에 넣지 않는다
+├── go2_tb_patrol_person.yaml     # TB — 순찰(표적 person) ⚠ 배치 경로 1/3 실패 미해결 → CI 격리(U3c)
+├── go2_tb_fail_fixture.yaml      # ⚠ 의도적 실패(예산 4 s, U3c 재실측) — CI 배송 목록에 넣지 않는다
 ├── hold_near_goal.py             # 커스텀 오라클 — 마지막 K초 동안 goal 반경 안에 서 있었나
 ├── upright.py                    # 커스텀 오라클 — 전 구간 전도 없음(roll/pitch 한계)
 ├── test/                         # 오라클 픽스처 테스트 (python3 -m pytest scenarios/test)
@@ -163,9 +164,9 @@ ros2 launch go2_bringup go2_nav.launch.py use_localization:=False
 컨테이너로 확인할 때:
 
 ```bash
-docker build -t go2-sut robot_sw/
-docker run --rm go2-sut                       # 기본 CMD = go2_patrol.launch.py use_sim_time:=true
-docker run --rm go2-sut ros2 launch go2_bringup go2_patrol.launch.py use_detector:=False
+docker build -t go2-sut:local robot_sw/       # 5개 시나리오가 선언하는 그 태그 (U3c에서 통일)
+docker run --rm go2-sut:local                 # 기본 CMD = go2_patrol.launch.py use_sim_time:=true
+docker run --rm go2-sut:local ros2 launch go2_bringup go2_patrol.launch.py use_detector:=False
 #   use_detector:=False = 인지가 죽은 리허설. manager가 NAV-ONLY로 강등되는 경로를 그대로 탄다.
 ```
 
@@ -174,12 +175,20 @@ docker run --rm go2-sut ros2 launch go2_bringup go2_patrol.launch.py use_detecto
 `scenarios/`에 파일을 두는 것만으로는 **조용히 안 돌아간다.** GPU 잡은 PR 소스를 체크아웃하지 않으므로(R10),
 `.github/workflows/verify.yml`의 `Stage verification inputs` 배송 목록에 `cp` 줄을 추가한 파일만 검증에 존재한다(G-94).
 지금 배송되는 것은 **`go2_t0_smoke.yaml` · `go2_ta_nav_random.yaml` · `go2_tb_patrol_chair.yaml` ·
-`go2_tb_patrol_person.yaml` · `hold_near_goal.py` · `upright.py` · `policy.pt`** 일곱이다. 특히 `policy.pt`는
+`hold_near_goal.py` · `upright.py` · `policy.pt`** 여섯이다. 특히 `policy.pt`는
 이미지 안에 없고 요청에 실려 가는 **SUT의 두 번째 아티팩트**이고, 오라클 `.py` 2개는 TB 시나리오가
 `module:Class` 로 참조하는 파일이라 — 셋 중 하나라도 빠지면 그 시나리오는 admit에서 거부된다(exit 2).
-**`go2_tb_fail_fixture.yaml` 은 일부러 배송하지 않는다**(의도적 실패 문서라 매 PR을 빨갛게 만든다 —
-carter 픽스처가 자기 obstacle_fail 문서에 대해 내린 것과 같은 판단). 목록이 비면 검증 잡 자체가
-skip되고 워크플로가 warning으로 크게 알린다.
+**배송하지 않는 문서 2종**:
+- `go2_tb_fail_fixture.yaml` — **설계상** 배송하지 않는다(의도적 실패 문서라 매 PR을 빨갛게 만든다 —
+  carter 픽스처가 자기 obstacle_fail 문서에 대해 내린 것과 같은 판단).
+- `go2_tb_patrol_person.yaml` — **설계가 아니라 미해결 결함 때문에 격리**했다(U3c). 첫 제품 경로 배치
+  런에서 3표본 중 1표본만 통과했고, 실패한 두 표본은 **restage 된 표본**에서 `/cmd_vel` 이 ~1.2 s에
+  **0.04 m/s로 붕괴**(보행 정책 데드존 AR-16/18 안쪽)해 180 s 예산을 서 있는 채로 소진했다. 같은 spawn ·
+  같은 기하를 단일 잡으로 3회 재현했으나 **전부 통과** — 원인은 배치/restage 경로에 있고 이 저장소가
+  닫을 수 없다(B-11 + M2). **`min_pass_ratio` 는 손대지 않았다**(0.67). 측정·근거·복구 방법은 그 문서
+  머리말의 KNOWN LIMITATION 블록과 워크플로 주석에 있다.
+
+목록이 비면 검증 잡 자체가 skip되고 워크플로가 warning으로 크게 알린다.
 
 ## 재현성 (환경 핀 — CLAUDE.md §2-7)
 
@@ -197,6 +206,7 @@ skip되고 워크플로가 warning으로 크게 알린다.
 | ultralytics + 전체 pip 트리 | `8.4.136` + `constraints-detector.txt`의 32개 전량 핀 | 파일 헤더에 생성 절차·AR-11 근거 |
 | yolo11n 가중치 | URL + sha256 `0ebbc80d…` (5,613,764 B) → 이미지에 봉인 | 빌드 중 `sha256sum -c` 실패 시 **빌드 중단** |
 | GitHub Action | 전부 commit SHA 핀 (플랫폼만 릴리즈 태그 `@v1`) | carter 픽스처에서 계승 |
+| **빌드 컨텍스트** | `robot_sw/.dockerignore` — 워킹트리 잡동사니(`**/__pycache__`·`**/.pytest_cache`) 제외 | U3c 실측: 없을 때 워킹트리 빌드가 `/opt/go2_ws/src` **35파일**, 클린 export 빌드가 **27파일**이었다(호스트 python 3.10 `.pyc`가 이미지에 들어갔다). 추가 후 27 == 27 sha256 일치 |
 
 ## 경계 규칙
 

@@ -70,12 +70,24 @@ execution_settings:
                                          #   byte-identical 2-run GT trajectory at this dt.
 
 sut:
-  # WORKSTATION-LOCAL tag for the U1 manual bring-up. In CI this value is NEVER read —
-  # .github/workflows/verify.yml injects the image the PR just built and pushed to GHCR
-  # (priority: --sut-image flag > $CV_INFRA_SUT_IMAGE > this value). It is the standalone
-  # default, so it must name an image that exists wherever you run this by hand.
-  # ⚠ Replace with the GHCR digest ref once the CI loop publishes one (C4).
-  image_ref: go2-sut:u1-dev
+  # ── THE image tag, for all five documents in this directory (U3c) ────────────────
+  # A locally built image of THIS repo's robot_sw/ at the commit you have checked out:
+  #
+  #     docker build -t go2-sut:local robot_sw/        # from the repo root
+  #
+  # In CI this value is NEVER read — .github/workflows/verify.yml injects the image the
+  # PR just built and pushed to GHCR (priority: --sut-image flag > $CV_INFRA_SUT_IMAGE >
+  # this value). It is the standalone default, so its only job is to name an image that
+  # exists wherever someone runs this BY HAND.
+  # ⚠ Why not a version tag (`u1-dev`, `u3`, …): those rot, silently, and C4c measured
+  # BOTH ways they rot on the GPU host in one afternoon — `go2-sut:u1-dev` (declared by
+  # this document and by go2_ta_nav_random.yaml) still held U1-era bytes with no detector
+  # and no patrol app, while `go2-sut:u3` (declared by the three TB documents) had never
+  # existed on that host at all, so those three could not be run by hand there. A tag that
+  # means "built from the working tree" cannot go stale against the source next to it. The
+  # BYTES are pinned by the build; the other half of the SUT (D2) is pinned by sha256
+  # below; and the identity the platform records is the image digest either way.
+  image_ref: go2-sut:local
   locomotion_policy:                     # 2nd SUT artifact (D2). Rides WITH the request: the file must
     file: policy.pt                      #   sit next to this yaml (the supervisor ro-mounts that dir).
     sha256: 73338e49c3f1932bbcb9cf54e97ef71a9cac24bb2bb214217aa8b592cb9442fd

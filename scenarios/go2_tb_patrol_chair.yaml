@@ -99,7 +99,8 @@ execution_settings:
   fixed_dt: 0.005                        # the policy's TRAINING condition (A4/D-4), as T0/TA
 
 sut:                                     # SUT = {image, locomotion policy} (D2) — see
-  image_ref: go2-sut:u3                  #   go2_t0_smoke.yaml for the full provenance note.
+  image_ref: go2-sut:local               #   go2_t0_smoke.yaml for the full provenance note (ONE tag
+                                         #   for all five documents, U3c).
   locomotion_policy:                     # CI injects the PR's image over `image_ref`; this is
     file: policy.pt                      #   the standalone default.
     sha256: 73338e49c3f1932bbcb9cf54e97ef71a9cac24bb2bb214217aa8b592cb9442fd

@@ -1,10 +1,20 @@
-# go2_tb_fail_fixture.yaml — the INTENTIONAL-FAIL patrol fixture (U3).
+# go2_tb_fail_fixture.yaml — the INTENTIONAL-FAIL patrol fixture (U3, budget re-measured U3c).
 #
 # ⚠ THIS DOCUMENT IS SUPPOSED TO FAIL. It is `go2_tb_patrol_chair.yaml` with the sim-time
-# mission budget cut from 180 s to 8 s — less than half the walk to the target takes — so
-# the robot is still on its patrol route when the platform cancels the goal. Expected
-# verdict fail, **exit code 1**, `reached_goal` "not_reached" and `hold_near_goal`
-# "left_goal".
+# mission budget cut from 180 s to 4 s — less than half the walk to the target takes — so
+# the robot is still on its patrol route when the platform cancels the goal.
+#
+# EXPECTED, and MEASURED on the GPU host with this exact budget (U3c, `cv-infra run`,
+# runner prod-0ffd7a2 — job u3c-fail-fixture-4s):
+#   exit code   1
+#   verdict     timeout            (the budget expired mid-mission; not "fail")
+#   reached_goal   False  "closest approach 2.121 m never within tolerance 1.000 m
+#                          (elapsed_sim=4.03s)"                     <- 1.12 m of margin
+#   hold_near_goal False  "801 sample(s) in the last 4.00s; worst xy distance 3.236 m"
+#   no_collision   True   "no robot collisions"
+#   upright        True   "worst |roll| 0.039, |pitch| 0.074"
+# The two criteria that must NOT fire (collision, attitude) stay green: a negative control
+# that fails on everything at once controls nothing.
 #
 # What it is FOR (the carter fixture has the same thing —
 # cv-infra-user/scenarios/nova_carter_warehouse_obstacle_fail.yaml):
@@ -39,16 +49,43 @@ scenario:
     yaw: 1.5708
     frame: map
   seed: 42
-  timeout_s: 8                           # ⚠ THE FAILURE, and the number is MEASURED, not
-                                         #   picked: the live mission takes 18 s of sim time
-                                         #   (U3 report §6-3) and the robot covers 3.5 m in
-                                         #   12.4 s of it (0.28 m/s including the waypoint
-                                         #   transition). At 8 s it is ~2 m up the aisle and
-                                         #   ~1.7 m from the goal — outside `reached_goal`'s
-                                         #   1.0 m and outside `hold_near_goal`'s radius.
-                                         #   ⚠ An earlier draft said 25 s; that would have let
-                                         #   the mission FINISH (18 s) and the "fail fixture"
-                                         #   would have passed. Fixtures need measurements too.
+  timeout_s: 4                           # ⚠ THE FAILURE, and the number is MEASURED — TWICE,
+                                         #   because the first measurement was taken in the wrong
+                                         #   world. Read this before touching it.
+                                         #
+                                         # ── What this fixture's OWN product-path run measured
+                                         # (env-3ab0b1f81692; distance to the goal keyed on /clock
+                                         # out of its mcap — the oracle's ground truth trails this
+                                         # AMCL belief by ~0.2 m):
+                                         #   sim_t  0.2  2.0  4.0  5.0  6.0  7.0
+                                         #   d_goal 2.80 2.50 1.67 1.52 1.31 0.95
+                                         # `reached_goal` fired at 7.58 s. The mission is ~7.6 s
+                                         # here, NOT the 18 s this header first assumed from U3's
+                                         # dev-world run — for two structural reasons: (a) the
+                                         # locomotion policy's activation transient walks the robot
+                                         # ~1.4 m up the aisle BEFORE the platform starts the
+                                         # clock, so the mission BEGINS 2.80 m from the goal, not
+                                         # 4.2 m; (b) the target is confirmed immediately, so there
+                                         # is no search leg to pay for.
+                                         #   ⇒ at 8 s the margin was 0.42 s and the fixture was
+                                         #   already failing for a DIFFERENT reason than the one
+                                         #   written above (C4c §6-2 measured: `reached_goal`
+                                         #   PASSED at 7.58 s; only `hold_near_goal` failed).
+                                         #
+                                         # ── Why 4 s, and not "a bit under 7.6 s": at the cut the
+                                         # robot is ~1.85 m (GT) from the goal, so passing
+                                         # `reached_goal(1.0)` would need 1.8 m in 4 s from a
+                                         # standing start = 0.45 m/s AVERAGE against this SUT's own
+                                         # 0.5 m/s ceiling (velocity_smoother max_velocity) and its
+                                         # measured ~2 s acceleration ramp. The fixture then fails
+                                         # STRUCTURALLY instead of by a margin the next tuning round
+                                         # can eat. `hold_near_goal`'s 4 s window covers the whole
+                                         # mission and never comes within 1.0 m, so BOTH documented
+                                         # criteria fail — which is the point of a negative control.
+                                         #   ⚠ An earlier draft said 25 s; that would have let the
+                                         #   mission FINISH and the "fail fixture" would have
+                                         #   passed. Fixtures need measurements too — and they need
+                                         #   RE-measuring whenever the SUT's mission changes.
   obstacles:
     - asset: chair
       count: 1
@@ -61,8 +98,8 @@ scenario:
 execution_settings:
   fixed_dt: 0.005                        # no `repeats`/`min_pass_ratio`: one sample, one verdict
 
-sut:
-  image_ref: go2-sut:u3
+sut:                                     # see go2_t0_smoke.yaml for the provenance note — ONE tag
+  image_ref: go2-sut:local               #   for all five documents (U3c), built from robot_sw/.
   locomotion_policy:
     file: policy.pt
     sha256: 73338e49c3f1932bbcb9cf54e97ef71a9cac24bb2bb214217aa8b592cb9442fd
