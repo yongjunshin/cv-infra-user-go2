@@ -44,6 +44,82 @@
 # ../robot_sw/src/go2_bringup/maps/carter_warehouse_navigation.png):
 #   start (-6.0, -1.0) 1.32 m · route (-5.5, 0.8) 3.30 m / (-6.0, 1.2) 2.80 m ·
 #   goal (-6.0, 3.2) 2.80 m · chair (-6.0, 5.2) 2.70 m · distractor window >= 4.3 m.
+#
+# ─────────────────────────────────────────────────────────────────────────────────
+# ⚠ KNOWN LIMITATION — BOTH TB PATROL DOCUMENTS ARE QUARANTINED FROM CI (U3d, 2026-09-01)
+# ⚠ The CI gate is T0 + TA. Neither this file nor go2_tb_patrol_person.yaml is in the
+# ⚠ shipping list of .github/workflows/verify.yml. Both stay here, runnable by hand.
+#
+# WHAT IS BROKEN. On the BATCH path a patrol run sometimes STALLS: the robot accelerates
+# normally, then at ~1.2 s its /cmd_vel collapses to a steady 0.03-0.05 m/s and it stands
+# still for the rest of the 180 s budget. The stall is PROBABILISTIC and it is attached to
+# the RUN, not to the document: the same file, the same image and the same host give
+# opposite verdicts.
+#
+# THE MEASUREMENT THAT SETTLES THAT — every batch run this TB pair has ever had, all of
+# them on the product path (`cv-infra submit`), all of them on 2026-09-01 (C4c, then QA):
+#
+#   run                  envelope           samples exit verdict  regression  flakiness
+#   chair  C4c           env-71c5a01c1ab0     3/3    0    pass    first run     0.000
+#   person C4c           env-b56d38370060     1/3    1    fail    first run     0.333
+#   chair  QA A 09:29:04 env-753318690d27     1/3    1    fail    regressed     0.333
+#   person QA            env-58e1d421bdca     3/3    0    pass    improved      0.000
+#   chair  QA B 09:45:37 env-b5958dd7ebd1     3/3    0    pass        -           -
+#                                                     ("first run" = no baseline yet;
+#                                                      "-" = not cited by the source)
+#
+# Rows 3 and 5 are THE SAME DOCUMENT, same runner image, same SUT image, same host, 16
+# minutes apart. So this is not a property of the target class, and the earlier reading —
+# "person fails on the batch path, chair holds the gate" (U3c) — is FALSIFIED and has been
+# removed from this repo. Observed stall rate: 2 of 5 runs (n = 5; do not over-read it).
+#
+# ONE SIGNATURE, BOTH TARGETS (mcap out of the envelope, /cmd_vel + /odom):
+#   * at ~1.2 s the COMMAND collapses to 0.03-0.05 m/s (|wz| ~0.09) and never recovers.
+#     That is inside this locomotion policy's dead zone (sub-0.2 m/s commands execute at
+#     5-23 %, AR-16/18), so the robot stops: its map-frame pose stays inside a 0.18 x
+#     0.20 m box while the oracle's ground truth records < 0.2 m of net progress.
+#   * chair, QA run A, stalled sample vs the PASSING sample of the SAME run:
+#       frac(|cmd_vel.x| > 0.05) = 0.152 vs 0.863 · mean |/odom vx| = 0.0064 vs 0.228 m/s
+#     person, C4c, stalled vs passing (U3c): 0.174 vs 0.894. The same shape twice.
+#   * nav2 then cycles its recovery ladder every ~13.6 s. Its only MOTION recovery is
+#     `BackUp 0.30 m @ 0.15 m/s` (behavior_trees/…_no_spin.xml), which is ITSELF inside
+#     the dead zone — so the ladder cannot unstick this robot and the budget burns.
+#   * the video shows no obstacle in front of the robot: a stalled sample and a passing
+#     one stand in the same place, in the same pose.
+#
+# WHAT IS RULED OUT (measured, so nobody spends it again):
+#   * NOT the derived inputs. The per-sample obstacle draw is IDENTICAL between the
+#     passing and the failing run of the same document (seed determinism holds), and the
+#     platform's regression identity key did not move.
+#   * NOT the spawn window, NOT "the target seen from 6 m": three single-job runs that
+#     reproduced a failing sample's exact spawn and its mission-start geometry all PASSED
+#     (U3c §2-3).
+#   * NOT reproducible with `cv-infra run` at all — that path runs ONE sample by design
+#     (it drops `repeats`), and on it the policy's activation transient walks the robot
+#     ~1.3 m up the aisle before the mission clock starts. Every stall ever seen was on a
+#     sample that follows a RESTAGE.
+#
+# THE PATTERN WORTH TESTING NEXT (hypothesis, n = 5 runs — NOT a conclusion): sample 0
+# passed in 5 of 5 runs, and samples 1-2 (the restaged ones) failed or passed TOGETHER,
+# per run. TA — 5 samples, same batch path, no camera in its interface — passed 5/5 in
+# both cycles. That points at a per-boot condition rather than a per-sample dice.
+#
+# WHAT WAS NOT DONE, ON PURPOSE. `min_pass_ratio` is UNCHANGED at 0.67 in both TB
+# documents. Lowering it to 0.34 would turn them green without moving the robot one
+# metre; a gate that is met by moving the bar measures the bar.
+#
+# WHO OWNS IT. The dead-zone behaviour is the platform-side backlog item B-11 (low-speed
+# command execution); what differs between a first sample and a restaged one is M2's
+# restage path (p6 C-2 soft reset + repose + realign). The last mile needs the SUT's own
+# stdout ON THE BATCH PATH, which the product path does not preserve — claimed four times
+# now (C4 §7-1 -> C4c §10-1 -> U3c §7-3 -> QA-3).
+#
+# RESTORE (one line each, once the cause is closed) in .github/workflows/verify.yml,
+# step `Stage verification inputs`:
+#   cp scenarios/go2_tb_patrol_chair.yaml  ci-inputs/scenarios/
+#   cp scenarios/go2_tb_patrol_person.yaml ci-inputs/scenarios/
+# Sources: QA findings 2026-09-01 §3-1/§3-2/§3-3 · U3c report §2-2/§2-3.
+# ─────────────────────────────────────────────────────────────────────────────────
 
 apiVersion: cv-infra/v1
 
