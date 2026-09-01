@@ -24,50 +24,21 @@
 #       table that fixed it at 2.0 m.)
 #
 # ─────────────────────────────────────────────────────────────────────────────────
-# ⚠ KNOWN LIMITATION — THIS REQUEST FAILS ON THE BATCH PATH TODAY (U3c, 2026-09-01)
-# ⚠ IT IS THEREFORE NOT IN THE CI SHIPPING LIST (.github/workflows/verify.yml).
+# ⚠ KNOWN LIMITATION — QUARANTINED FROM CI, TOGETHER WITH THE CHAIR DOCUMENT (U3d)
 #
-# WHAT WAS MEASURED. The first product-path run of this document (C4c, envelope
-# env-b56d38370060, runner prod-0ffd7a2) passed 1 of 3 samples -> verdict fail, exit 1.
-# Samples 1 and 2 spent the whole 180 s sim budget standing 3.88 / 3.81 m from the goal.
-# Their mcaps say the same thing twice (U3c, /odom + /cmd_vel + /tf out of the envelope):
+# Neither TB patrol document is in the CI shipping list (.github/workflows/verify.yml);
+# the gate is T0 + TA. The reason is a PROBABILISTIC stall on the BATCH path that is
+# attached to the RUN, not to the target class: over the five batch runs this pair has
+# had, the CHAIR document produced 1/3 (exit 1, flakiness 0.333, `regressed`) and 3/3
+# (exit 0) sixteen minutes apart on the same image and the same host, while THIS
+# document — which U3c had written down as "the one that fails" — passed 3/3
+# (`improved`) on that same morning (QA, 2026-09-01). U3c's reading is therefore
+# falsified; do not re-derive it from this file's history.
 #
-#   * the robot starts NORMALLY — it accelerates to 0.23 / 0.33 m/s within the first
-#     second, exactly like the samples that pass;
-#   * at ~1.2 s the COMMAND collapses to a steady 0.03-0.05 m/s (|wz| ~0.09) and never
-#     recovers. That is deep inside this locomotion policy's dead zone (sub-0.2 m/s
-#     commands execute at 5-23 %, AR-16/18), so the robot stops moving: its map-frame pose
-#     stays inside a 0.18 x 0.20 m box for the remaining 178 s, and the oracle's ground
-#     truth records 2.048 m of path with < 0.2 m of net progress toward the goal;
-#   * nav2 then cycles its recovery ladder every ~13.6 s for the rest of the budget. Its
-#     only MOTION recovery is `BackUp 0.30 m @ 0.15 m/s` (behavior_trees/…_no_spin.xml),
-#     which is ITSELF inside the dead zone — measured: the two backup phases hold -0.15 m/s
-#     for 10-15 s each and the pose does not move 0.30 m. The ladder cannot unstick this
-#     robot, so the mission burns the whole budget instead of ending.
-#   * the passing sample and all three chair samples ramp to 0.4-0.5 m/s and never collapse.
-#
-# WHAT COULD NOT BE REPRODUCED. Three single-job runs on the GPU host (U3c, `cv-infra run`,
-# same runner image, same SUT) all PASSED: (a) this document as committed, (b) sample 1's
-# exact derived spawn (-6.1336, -0.8764, 1.5521) with its exact obstacle draw as a static
-# document, (c) a twin with the person AND the goal moved 1.3 m north, which reproduces the
-# failing sample's geometry at mission start (robot->person 6.09 m, robot->goal 4.09 m).
-# So the stall is not a property of this document's spawn window, nor of "person seen from
-# 6 m". It only appears on the BATCH path, on a sample that follows a restage — and a
-# consumer cannot exercise that path locally: `cv-infra run` executes ONE sample by design
-# (it drops `repeats`), and on that path the policy's activation transient always walks the
-# robot ~1.3 m up the aisle before the mission clock starts.
-#
-# WHAT WAS NOT DONE, ON PURPOSE. `min_pass_ratio` below is UNCHANGED (0.67 = 2 of 3).
-# Lowering it to 0.34 would turn this document green without moving the robot one metre;
-# a gate that is met by moving the bar measures the bar. The document stays in the repo,
-# runnable by hand, and stays OUT of the CI gate until the cause is closed — the honest
-# shape of "we know it is broken and we know what we do not know".
-#
-# WHO OWNS THE REST. The dead-zone behaviour is the platform-side backlog item B-11
-# (low-speed command execution); what differs between a first sample and a restaged one
-# is M2's restage path (p6 C-2 soft reset + repose + realign). The last mile of the
-# diagnosis needs the SUT's own stdout, which the product path does not preserve
-# (C4 §7-1) — this is the second cycle in which that costs a root cause.
+# The full measurement, what has been ruled out, the owner (B-11 dead zone + M2 restage)
+# and the one-line restore recipe live in ONE place: the KNOWN LIMITATION block in the
+# header of go2_tb_patrol_chair.yaml — the same file this document already delegates its
+# mission story to. `min_pass_ratio` below is unchanged (0.67), here and there.
 # ─────────────────────────────────────────────────────────────────────────────────
 
 apiVersion: cv-infra/v1

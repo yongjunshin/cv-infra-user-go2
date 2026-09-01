@@ -11,8 +11,9 @@ CV-Infra의 **두 번째 소비자 / E2E 픽스처** (public). 첫 번째(`cv-in
 > `/nav2/navigate_to_pose`로 안쪽에 리맵된다(결정 D4 — **어댑터 계약 변경 0**). `scenarios/`에 T0 스모크 ·
 > TA 랜덤 · **TB 순찰 2종(chair/person)** · **의도적 실패 픽스처** · 커스텀 오라클 2종(`hold_near_goal`,
 > `upright`) · 요청에 실려 가는 보행 정책 파일이 있다. PR을 열면 SUT 이미지를 빌드해 GHCR에 올리고
-> **T0·TA·TB chair + 오라클 2종을 GPU 검증 잡에 배송**한다(실패 픽스처는 의도적으로 배송하지 않고,
-> **TB person 은 배치 경로 실패가 미해결이라 격리(quarantine)** 되어 있다 — 아래 §CI 게이트).
+> **T0·TA + 오라클 2종 + 정책 파일을 GPU 검증 잡에 배송**한다. 실패 픽스처는 의도적으로 배송하지 않고,
+> **TB 순찰 2종(chair/person)은 배치 경로의 확률적 스톨이 미해결이라 둘 다 격리(quarantine)** 되어
+> 있다 — 아래 §알려진 한계.
 
 ## 저장소 레이아웃
 
@@ -43,7 +44,8 @@ scenarios/
 ├── go2_t0_smoke.yaml             # T0 — 정적 1샘플 스모크 (CI 게이트)
 ├── go2_ta_nav_random.yaml        # TA — 출발/목표/장애물 랜덤, 5샘플·pass_ratio 0.8
 ├── go2_tb_patrol_chair.yaml      # TB — 순찰(표적 chair), 3샘플·pass_ratio 0.67
-├── go2_tb_patrol_person.yaml     # TB — 순찰(표적 person) ⚠ 배치 경로 1/3 실패 미해결 → CI 격리(U3c)
+│                                 #   ⚠ 배치 경로 확률 스톨 미해결 → CI 격리(U3d) · 측정은 이 파일 머리말
+├── go2_tb_patrol_person.yaml     # TB — 순찰(표적 person) ⚠ 같은 사유로 CI 격리(U3d)
 ├── go2_tb_fail_fixture.yaml      # ⚠ 의도적 실패(예산 4 s, U3c 재실측) — CI 배송 목록에 넣지 않는다
 ├── hold_near_goal.py             # 커스텀 오라클 — 마지막 K초 동안 goal 반경 안에 서 있었나
 ├── upright.py                    # 커스텀 오라클 — 전 구간 전도 없음(roll/pitch 한계)
@@ -174,21 +176,83 @@ docker run --rm go2-sut:local ros2 launch go2_bringup go2_patrol.launch.py use_d
 
 `scenarios/`에 파일을 두는 것만으로는 **조용히 안 돌아간다.** GPU 잡은 PR 소스를 체크아웃하지 않으므로(R10),
 `.github/workflows/verify.yml`의 `Stage verification inputs` 배송 목록에 `cp` 줄을 추가한 파일만 검증에 존재한다(G-94).
-지금 배송되는 것은 **`go2_t0_smoke.yaml` · `go2_ta_nav_random.yaml` · `go2_tb_patrol_chair.yaml` ·
-`hold_near_goal.py` · `upright.py` · `policy.pt`** 여섯이다. 특히 `policy.pt`는
-이미지 안에 없고 요청에 실려 가는 **SUT의 두 번째 아티팩트**이고, 오라클 `.py` 2개는 TB 시나리오가
-`module:Class` 로 참조하는 파일이라 — 셋 중 하나라도 빠지면 그 시나리오는 admit에서 거부된다(exit 2).
-**배송하지 않는 문서 2종**:
+지금 배송되는 것은 **`go2_t0_smoke.yaml` · `go2_ta_nav_random.yaml` · `hold_near_goal.py` ·
+`upright.py` · `policy.pt`** 다섯이다 — 즉 **CI 게이트 = T0 + TA**. 특히 `policy.pt`는 이미지 안에 없고
+요청에 실려 가는 **SUT의 두 번째 아티팩트**라 빠지면 모든 go2 시나리오가 admit에서 거부된다(exit 2).
+오라클 `.py` 2개는 **지금 배송되는 어느 문서도 참조하지 않는다**(TB 문서와 실패 픽스처만 `module:Class`로
+참조한다) — 검증이 훑는 것은 `scenarios/*.yaml`뿐이라 무해하고, 격리 해제를 **한 줄 변경**으로 남겨 두기
+위해 그대로 싣는다.
+
+**배송하지 않는 문서 3종**:
 - `go2_tb_fail_fixture.yaml` — **설계상** 배송하지 않는다(의도적 실패 문서라 매 PR을 빨갛게 만든다 —
   carter 픽스처가 자기 obstacle_fail 문서에 대해 내린 것과 같은 판단).
-- `go2_tb_patrol_person.yaml` — **설계가 아니라 미해결 결함 때문에 격리**했다(U3c). 첫 제품 경로 배치
-  런에서 3표본 중 1표본만 통과했고, 실패한 두 표본은 **restage 된 표본**에서 `/cmd_vel` 이 ~1.2 s에
-  **0.04 m/s로 붕괴**(보행 정책 데드존 AR-16/18 안쪽)해 180 s 예산을 서 있는 채로 소진했다. 같은 spawn ·
-  같은 기하를 단일 잡으로 3회 재현했으나 **전부 통과** — 원인은 배치/restage 경로에 있고 이 저장소가
-  닫을 수 없다(B-11 + M2). **`min_pass_ratio` 는 손대지 않았다**(0.67). 측정·근거·복구 방법은 그 문서
-  머리말의 KNOWN LIMITATION 블록과 워크플로 주석에 있다.
+- `go2_tb_patrol_chair.yaml` · `go2_tb_patrol_person.yaml` — **설계가 아니라 미해결 결함 때문에 둘 다
+  격리**했다(U3d). 사유·측정·복구는 바로 아래 §알려진 한계.
 
 목록이 비면 검증 잡 자체가 skip되고 워크플로가 warning으로 크게 알린다.
+
+## 알려진 한계 — TB 순찰 2종의 배치 경로 확률 스톨 (미해결)
+
+**증상.** 배치 경로(`repeats` 표본)에서 순찰 런이 가끔 **선다**. 로봇은 정상적으로 가속했다가 **~1.2 s에
+`/cmd_vel`이 0.03~0.05 m/s로 붕괴**해 180 s 예산이 끝날 때까지 제자리에 서 있는다. **확률적이고, 문서가
+아니라 런에 붙어 있다** — 같은 파일·같은 이미지·같은 호스트가 반대 판정을 낸다.
+
+**측정** — 이 TB 쌍이 지금까지 가진 배치 런 **전부**(제품 경로 `cv-infra submit`, 전부 2026-09-01):
+
+| 런 | 봉투 | 표본 | exit | verdict | 회귀 | flakiness |
+|---|---|---|---|---|---|---|
+| chair · C4c | `env-71c5a01c1ab0` | 3/3 | 0 | pass | 첫 런(baseline 없음) | 0.000 |
+| person · C4c | `env-b56d38370060` | 1/3 | 1 | fail | 〃 | 0.333 |
+| **chair · QA A** (잡 09:29:04) | `env-753318690d27` | **1/3** | **1** | **fail** | `regressed` | **0.333** |
+| person · QA | `env-58e1d421bdca` | 3/3 | 0 | pass | `improved` | 0.000 |
+| **chair · QA B** (잡 09:45:37) | `env-b5958dd7ebd1` | **3/3** | **0** | **pass** | — | — |
+
+★ QA A와 QA B는 **같은 문서·같은 러너/SUT 이미지·같은 호스트, 16분 차**다.
+
+⇒ **U3c가 세 문서에 박았던 모델("person이 배치에서 실패한다 / chair가 그 자리를 지킨다")은 반증됐다.**
+관측된 스톨 비율은 **5런 중 2런**(n=5 — 과잉 해석 금지).
+
+**붕괴 서명은 두 표적에서 하나다**(봉투 mcap `/cmd_vel`+`/odom`):
+
+| 지표 | chair QA A 스톨 표본 | 같은 런의 통과 표본 | person C4c 스톨(U3c) | 통과 |
+|---|---|---|---|---|
+| `frac(\|cmd_vel.x\| > 0.05)` | **0.152** | 0.863 | **0.174** | 0.894 |
+| 평균 `\|/odom vx\|` (m/s) | **0.0064** | 0.228 | — | — |
+
+붕괴값은 보행 정책 **데드존**(0.2 m/s 미만 명령의 실행률 5~23 %, AR-16/18) 안쪽이라 로봇이 실제로 서고,
+map 프레임 포즈는 0.18 × 0.20 m 상자를 벗어나지 못한다. nav2는 **~13.6 s 주기**로 복구 사다리를 돌리지만
+유일한 이동 복구 `BackUp 0.30 m @ 0.15 m/s` **자체가 데드존 안**이라 로봇을 빼내지 못한다.
+
+**아닌 것으로 확인된 것**(다시 지불하지 않도록): ① **파생 입력이 아니다** — 같은 문서의 통과 런과 실패 런은
+표본별 장애물 draw가 **동일**하고(시드 결정론 성립) 회귀 정체성 키도 움직이지 않았다 ② **spawn 창도, "6 m
+앞의 표적"도 아니다** — 실패 표본의 정확한 spawn과 미션 시작 기하를 복원한 단일 잡 3회가 **전부 통과**(U3c)
+③ **`cv-infra run`으로는 재현 자체가 안 된다** — 이 경로는 설계상 표본 1개만 돌리고(`repeats`를 버린다)
+보행 정책 활성화 트랜지언트가 미션 시작 전에 로봇을 ~1.3 m 밀어낸다. 스톨은 **restage 뒤 표본**에서만 났다.
+
+**다음에 검증할 패턴**(가설, n=5 — 결론 아님): 표본 0은 **5런 중 5런 통과**했고, 표본 1·2(restage 된 것)는
+**런 단위로 함께** 실패하거나 함께 통과했다. TA(5표본·같은 배치 경로·인터페이스에 카메라 없음)는 두 사이클
+모두 5/5다. 표본별 주사위가 아니라 **부팅 단위 조건**을 가리킨다.
+
+**하지 않은 것.** `min_pass_ratio`는 두 문서 모두 **0.67 그대로**다. 0.34로 낮추면 로봇을 1 m도 안 움직이고
+문서가 초록이 된다 — 바를 내려 통과하는 게이트는 바를 잰다.
+
+**격리의 비용(명시).** CI 게이트는 이제 **순찰 미션을 전혀 행사하지 않는다.** T0·TA가 항법·계약·아티팩트를
+막고, SUT의 인지·미션 상태기계는 TB가 돌아올 때까지 **아무것도 막지 않는다.** 동전 던지기로 게이팅하지
+않기 위한 값이고, 그래서 이 원인은 닫힌 항목이 아니라 **살아 있는 청구**다.
+
+**소유.** 데드존 거동 = 플랫폼 백로그 **B-11**(저속 명령 실행), 첫 표본과 restage 표본의 차이 = **M2**의
+restage 경로(p6 C-2 soft reset + repose + realign). 마지막 한 걸음은 **배치 경로에서의 SUT stdout**인데
+제품 경로가 그것을 보존하지 않는다 — **네 번째 청구**(C4 §7-1 → C4c §10-1 → U3c §7-3 → QA-3).
+
+**복구**(원인이 닫히면 문서당 한 줄) — `.github/workflows/verify.yml`의 `Stage verification inputs`:
+
+```bash
+cp scenarios/go2_tb_patrol_chair.yaml  ci-inputs/scenarios/
+cp scenarios/go2_tb_patrol_person.yaml ci-inputs/scenarios/
+```
+
+두 문서는 저장소에 그대로 있고 **손으로 돌릴 수 있다**. 전체 측정 원문은 `go2_tb_patrol_chair.yaml`
+머리말의 KNOWN LIMITATION 블록(단일 출처)에 있다.
 
 ## 재현성 (환경 핀 — CLAUDE.md §2-7)
 
