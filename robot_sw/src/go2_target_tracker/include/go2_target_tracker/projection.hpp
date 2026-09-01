@@ -3,11 +3,11 @@
 // Nothing in here knows about ROS, tf2 or the mission. That is deliberate: these four
 // functions are the ones that can be silently wrong (a swapped fx/fy, an off-by-one row
 // stride, a depth window that averages the wall behind the chair, an association radius
-// applied across classes) and stay wrong for a whole GPU run before anyone notices. They
+// applied across classes) and stay wrong for a whole live run before anyone notices. They
 // are therefore compiled and asserted on the CPU (test/test_projection.cpp) with no ROS
 // in the loop — the same split `go2_detector/detection_logic.py` uses on the Python side.
 //
-// Frame convention (platform C3 §2-2, MEASURED): the image is stamped in `go2_camera`,
+// Frame convention (MEASURED): the image is stamped in `go2_camera`,
 // which is a ROS **optical** frame (REP-103: x right, y down, z forward), so a
 // back-projected point is already expressed in that frame and tf2 alone carries it to
 // `map`. There is no separate `camera_link` and no axis permutation to apply here.
@@ -33,8 +33,8 @@ struct Point3
 };
 
 /// Pinhole intrinsics as they arrive in `sensor_msgs/CameraInfo.k`
-/// (MEASURED on this sim: k = [366.4996, 0, 320, 0, 366.4997, 240, 0, 0, 1], 640x480 —
-/// platform C3 §4-3, cross-checked against the vendor intrinsics).
+/// (MEASURED on this sim: k = [366.4996, 0, 320, 0, 366.4997, 240, 0, 0, 1], 640x480,
+/// cross-checked against the vendor intrinsics).
 struct CameraIntrinsics
 {
   double fx{0.0};
@@ -48,7 +48,7 @@ struct CameraIntrinsics
 /// Back-project pixel (u, v) at `depth_m` into the camera OPTICAL frame.
 ///
 /// ASSUMPTION, surfaced not hidden: `depth_m` is Z-depth (distance to the image plane),
-/// which is what the platform's depth stream carries (32FC1, `distance_to_image_plane`
+/// which is what this depth stream carries (32FC1, `distance_to_image_plane`
 /// family). If it were radial distance instead, this over-estimates the range by
 /// 1/cos(angle) — 1.6 % at the frame corner, 0 % at the centre where a bbox centre of a
 /// centred target sits. The tracker only ever projects bbox CENTRES, so the residual is
@@ -112,7 +112,7 @@ inline double medianDepth(
   return samples[mid];
 }
 
-/// One tracked target in the map frame. `hits` is the TIME filter that AR-24 asks for:
+/// One tracked target in the map frame. `hits` is the TIME filter this app needs:
 /// a single frame's confidence swings 0.22..0.80 on the same chair depending on framing,
 /// so "seen N times at the same place" is the claim we publish, not "seen once".
 struct Track

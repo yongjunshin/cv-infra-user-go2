@@ -28,13 +28,13 @@ into one directory needs no path edit and none was made.
 
 ## Why the *carter* map is the right map for the Go2
 
-The Go2 scene the platform composes (`go2_warehouse`, runner scene registry) references the
-**same warehouse USD and the same extras layer** the carter sample references, both with an
-identity transform, and only adds the robot. So the occupancy grid transfers unchanged —
-map frame == world frame, no offset to reconcile.
+The Go2 warehouse scene this app is developed against references the **same warehouse USD
+and the same extras layer** the carter sample references, both with an identity transform,
+and only adds the robot. So the occupancy grid transfers unchanged — map frame == world
+frame, no offset to reconcile.
 
-That is not an inference from file names; the platform measured it (decision **AR-13**,
-2026-09-01, on the live composed stage — `reports/runner-2026-09-01-go2-c1-scene.md` §4):
+That is not an inference from file names; it was measured on the live composed stage
+(2026-09-01):
 
 | property | measured |
 |---|---|
@@ -48,10 +48,10 @@ That is not an inference from file names; the platform measured it (decision **A
 
 `go2_nav.launch.py` passes it to `nav2_bringup` as the `map:=` argument, which starts
 `map_server` + `amcl` (the `use_localization` path). The AMCL prior in
-`../params/nav2_params.yaml` (`set_initial_pose` / `initial_pose`) is expressed in **this
-map's frame**, and so are the `scenarios/*.yaml` goals — one coordinate system for the
-whole fixture.
+`../params/nav2_params.yaml` (`set_initial_pose` / `initial_pose`) and the patrol
+manager's `search_waypoints` are both expressed in **this map's frame** — one coordinate
+system for the whole app.
 
-Free-space clearances quoted in the scenario headers were computed **from this png**
-(trinary thresholds from the yaml, chamfer distance transform); e.g. the T0 lane
+Free-space clearances quoted elsewhere in this package were computed **from this png**
+(trinary thresholds from the yaml, chamfer distance transform); e.g. the lane
 `x = -6.0, y in [-1, 5]` has 1.35 m of clearance at the start and 2.7-2.8 m along the rest.

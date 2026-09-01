@@ -1,12 +1,11 @@
-# robot_sw/.dockerignore — keep a developer's working-tree noise OUT of the SUT image.
+# robot_sw/.dockerignore — keep a developer's working-tree noise OUT of the app image.
 #
-# WHY THIS EXISTS (measured, U3c 2026-09-01). The five scenarios in ../scenarios name one
-# image tag and document how to build it: `docker build -t go2-sut:local robot_sw/`. That
-# promise is only worth something if the image a developer builds equals the image CI
-# builds. It did not: building from a working tree produced an image whose /opt/go2_ws/src
-# held 35 files, while building the same commit from a clean export held 27 — the extra 8
-# were `__pycache__/*.pyc` and `.pytest_cache/` left behind by running the unit tests. They
-# are in .gitignore, so git never showed them, and they rode into the SUT anyway.
+# WHY THIS EXISTS (measured 2026-09-01). `docker build -t go2-app:local robot_sw/` is only
+# worth documenting if the image a developer builds equals the image CI builds. It did
+# not: building from a working tree produced an image whose /opt/go2_ws/src held 35 files,
+# while building the same commit from a clean export held 27 — the extra 8 were
+# `__pycache__/*.pyc` and `.pytest_cache/` left behind by running the unit tests. They are
+# in .gitignore, so git never showed them, and they rode into the image anyway.
 #
 # Nothing here is load-bearing for the build: the image's ROS packages are built by colcon
 # INSIDE the container, so caches from the host's own python are noise at best and a stale
@@ -18,9 +17,6 @@
 # image still carried all 8 junk files. `**/__pycache__` is what reaches
 # src/go2_detector/go2_detector/__pycache__.
 #
-# Anything the request actually needs (e.g. the locomotion policy) lives next to the
-# scenario, never here — see ../scenarios/go2_t0_smoke.yaml (D2).
-
 **/__pycache__
 **/*.py[cod]
 **/.pytest_cache
@@ -30,3 +26,6 @@
 **/build
 **/install
 **/log
+
+# The locomotion policy is loaded by the simulator that moves the legs, never by this app.
+models/

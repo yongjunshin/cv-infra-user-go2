@@ -1,0 +1,21 @@
+# Patrol: drive the configured search route until a target is confirmed, approach it,
+# and hold it centred and large on screen at the standoff distance.
+#
+# target_class narrows the mission to ONE class (e.g. "person"). Empty = any of the
+# node's configured `target_classes`. A non-empty class outside that list is rejected
+# at goal time: the tracker will never publish it, so the mission could only fail slowly.
+string target_class
+---
+# true only when the target was confirmed AND held on screen at the standoff pose.
+bool found
+# The confirmed target in the map frame (identity orientation: the tracker claims a
+# position, not a heading). Meaningful only when found is true.
+geometry_msgs/PoseStamped target_pose
+# Human-readable outcome, mirrored in the node's log.
+string message
+---
+# Current mission state: PROBE, SEARCHING, APPROACHING or HOLDING.
+string state
+geometry_msgs/PoseStamped robot_pose
+# Seconds since the goal was accepted (sim time when use_sim_time is set).
+float32 elapsed_s

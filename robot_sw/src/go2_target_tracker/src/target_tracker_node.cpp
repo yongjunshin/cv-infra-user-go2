@@ -6,19 +6,21 @@
 //   TF go2_camera -> map
 //        |
 //        v
-//   /targets                  (geometry_msgs/PoseArray, frame `map`, CONFIRMED tracks only)
+//   /targets                  (vision_msgs/Detection3DArray, frame `map`, class-labeled
+//                              CONFIRMED tracks)
 //
-// Layer rule (patrol app DESIGN, master plan §1-5/§1-7): the detector below does not know
-// the mission and the manager above does not know pixels. This node is the only place
-// where a pixel becomes a place. It publishes CONFIRMED tracks only — a target that has
-// been seen `min_hits` times at the same spot — because one frame's confidence is not
-// evidence for this SUT: the same chair measures 0.22..0.80 depending on whether it is
-// whole and large in the frame (platform C0 §6-5 + U2 §4-2, ruling AR-9/AR-24). The time
-// filter is what turns that into a stable claim, and it is why the manager can treat a
-// non-empty /targets as "go".
+// Layer rule: the detector below does not know the mission and the manager above does not
+// know pixels. This node is the only place where a pixel becomes a place. It publishes
+// CONFIRMED tracks only — a target that has been seen `min_hits` times at the same spot —
+// because one frame's confidence is not evidence on this robot: the same chair measures
+// 0.22..0.80 depending on whether it is whole and large in the frame. The time filter is
+// what turns that into a stable claim, and it is why the manager can treat a matching
+// /targets entry as "go".
 //
-// Local-first (master plan §1-8): plain ROS 2. Point it at a rosbag, the platform's
-// dev-world or a real camera; nothing here mentions cv-infra.
+// Each published detection carries its CLASS, so the manager can be told "find a person"
+// and ignore the chair standing next to it.
+//
+// Local-first: plain ROS 2. Point it at a rosbag, a simulator or a real camera.
 
 #include <algorithm>
 #include <cmath>
@@ -27,7 +29,6 @@
 #include <string>
 #include <vector>
 
-#include <geometry_msgs/msg/pose_array.hpp>
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
@@ -36,6 +37,7 @@
 #include <tf2_ros/buffer.hpp>
 #include <tf2_ros/transform_listener.hpp>
 #include <vision_msgs/msg/detection2_d_array.hpp>
+#include <vision_msgs/msg/detection3_d_array.hpp>
 
 #include "go2_target_tracker/projection.hpp"
 
@@ -55,12 +57,15 @@ public:
     const auto camera_info_topic =
       declare_parameter<std::string>("camera_info_topic", "/camera/camera_info");
     const auto targets_topic = declare_parameter<std::string>("targets_topic", "/targets");
-    // The patrol targets (master plan §1-6). Both are COCO classes the sealed yolo11n
-    // emits directly; distractor props (box/desk/forklift) are not in this list, so a
-    // forklift measured as `truck 0.75` can never become a target.
+    // The patrol targets. Both are COCO classes yolo11n emits directly; scenery
+    // (box/desk/forklift) is not in this list, so a forklift measured as `truck 0.75` can
+    // never become a target.
+    // ⚠ go2_patrol_manager declares the SAME parameter with the SAME default and uses it
+    // to validate incoming goals. Override one without the other and a goal class it
+    // accepts can never be published here. Change both, or neither.
     target_classes_ = declare_parameter<std::vector<std::string>>(
       "target_classes", std::vector<std::string>{"person", "chair"});
-    // 0.5 = the detector threshold AR-9 fixed. Kept here as well so the tracker is still
+    // 0.5 = the target-confidence threshold. Kept here as well so the tracker is still
     // safe when someone runs the detector wide open to look at raw output.
     min_confidence_ = declare_parameter<double>("min_confidence", 0.5);
     map_frame_ = declare_parameter<std::string>("map_frame", "map");
@@ -71,10 +76,10 @@ public:
     // real (-6.00, 5.20) — 1.5 m of travel for a target that never moved. At 0.75 m the
     // corrected measurements opened a SECOND track and the manager approached the ghost.
     // The radius must therefore exceed the localisation error, while staying under the
-    // separation this repo's scenarios keep between a target and anything else that
-    // could be one (>= 1.65 m).
+    // separation between a target and the nearest thing that could be mistaken for one
+    // (>= 1.65 m in the scene this app was tuned on).
     assoc_radius_m_ = declare_parameter<double>("assoc_radius_m", 1.5);
-    // 3 hits at the detector's 5 Hz = 0.6 s of sim time agreeing with itself (AR-24).
+    // 3 hits at the detector's 5 Hz = 0.6 s of sim time agreeing with itself.
     min_hits_ = declare_parameter<int>("min_hits", 3);
     position_lpf_alpha_ = declare_parameter<double>("position_lpf_alpha", 0.4);
     // 2 -> a 5x5 px window. The chair's bbox centre often falls in the gap between seat
@@ -84,8 +89,8 @@ public:
     // 8 m: past that the target is a handful of pixels and the projection error grows
     // with the square of range. Detections beyond it are dropped, not projected badly.
     max_depth_m_ = declare_parameter<double>("max_depth_m", 8.0);
-    // depth and rgb are published at the same 10 Hz sim rate from the same frame
-    // (C3 §4-1), so 0.25 s = two frames of slack, not a guess. With the buffer below the
+    // depth and rgb are published at the same 10 Hz rate from the same frame (measured on
+    // this sim), so 0.25 s = two frames of slack, not a guess. With the buffer below the
     // usual match is EXACT (same stamp); this bound is what rejects a detection whose
     // depth frame never arrived.
     max_depth_age_s_ = declare_parameter<double>("max_depth_age_s", 0.25);
@@ -103,8 +108,8 @@ public:
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, this);
 
     // BEST_EFFORT for the sensor streams: a BEST_EFFORT subscription matches both a
-    // RELIABLE publisher (what the platform's runner uses — C3 §2) and a BEST_EFFORT one
-    // (what a real camera driver uses); the reverse does not hold.
+    // RELIABLE publisher (what a sim bridge typically uses) and a BEST_EFFORT one (what a
+    // real camera driver uses); the reverse does not hold.
     //
     // ⚠ Depth keeps a short HISTORY, not just the latest frame. Detections arrive LATE
     // (the detector spends 25-500 ms of CPU per frame), so by the time one lands here the
@@ -130,7 +135,7 @@ public:
     detections_sub_ = create_subscription<vision_msgs::msg::Detection2DArray>(
       detections_topic, rclcpp::QoS(5).reliable(),
       [this](vision_msgs::msg::Detection2DArray::SharedPtr msg) { onDetections(*msg); });
-    targets_pub_ = create_publisher<geometry_msgs::msg::PoseArray>(
+    targets_pub_ = create_publisher<vision_msgs::msg::Detection3DArray>(
       targets_topic, rclcpp::QoS(5).reliable());
 
     std::string classes;
@@ -162,9 +167,9 @@ private:
   ///
   /// Tries the detection's stamp first (the honest answer: where the target was when the
   /// pixel was taken) and falls back to the LATEST transform when tf2 cannot interpolate
-  /// yet. The fallback is safe for this mission because the targets are static (master
-  /// plan §1-6, randomized targets are backlog B-2) and the robot moves ~0.4 m/s, i.e.
-  /// a 0.1 s TF age is a 4 cm error against a 0.75 m association radius. It is logged, so
+  /// yet. The fallback is safe for this mission because the targets in it are static and
+  /// the robot moves ~0.4 m/s, i.e. a 0.1 s TF age is a 4 cm error against a 0.75 m
+  /// association radius. It is logged, so
   /// "we quietly used a stale transform" is never invisible.
   bool toMap(const geometry_msgs::msg::PointStamped & in, geometry_msgs::msg::PointStamped & out)
   {
@@ -308,19 +313,28 @@ private:
 
   void publish(const builtin_interfaces::msg::Time & stamp)
   {
-    geometry_msgs::msg::PoseArray out;
-    out.header.stamp = stamp;  // the SOURCE image stamp: sim time, same instant as the pixels
+    vision_msgs::msg::Detection3DArray out;
+    out.header.stamp = stamp;  // the SOURCE image stamp: same instant as the pixels
     out.header.frame_id = map_frame_;
     for (const auto & track : tracks_) {
       if (!track.confirmed) {
         continue;
       }
-      geometry_msgs::msg::Pose pose;
-      pose.position.x = track.position.x;
-      pose.position.y = track.position.y;
-      pose.position.z = track.position.z;
-      pose.orientation.w = 1.0;  // position-only target: no orientation is claimed
-      out.poses.push_back(pose);
+      vision_msgs::msg::Detection3D det;
+      det.header = out.header;
+      det.id = track.class_id;  // same convention as Detection2D.id upstream: the class name
+      vision_msgs::msg::ObjectHypothesisWithPose hyp;
+      hyp.hypothesis.class_id = track.class_id;
+      // score = the time-filtered confirmation claim (min_hits agreeing frames), NOT a raw
+      // model confidence — single-frame confidence is exactly what this node distrusts.
+      hyp.hypothesis.score = 1.0;
+      hyp.pose.pose.position.x = track.position.x;
+      hyp.pose.pose.position.y = track.position.y;
+      hyp.pose.pose.position.z = track.position.z;
+      hyp.pose.pose.orientation.w = 1.0;  // position-only target: no orientation is claimed
+      det.results.push_back(hyp);
+      // det.bbox stays zeroed: no 3D extent is measured, so none is claimed.
+      out.detections.push_back(det);
     }
     // Published on EVERY processed frame, empty included: "nothing confirmed yet" is a
     // fact the manager needs, and a topic that only speaks on success is a topic whose
@@ -371,7 +385,7 @@ private:
   rclcpp::Subscription<vision_msgs::msg::Detection2DArray>::SharedPtr detections_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr info_sub_;
-  rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr targets_pub_;
+  rclcpp::Publisher<vision_msgs::msg::Detection3DArray>::SharedPtr targets_pub_;
 };
 
 }  // namespace go2_target_tracker

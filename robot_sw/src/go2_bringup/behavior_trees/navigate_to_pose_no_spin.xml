@@ -13,14 +13,12 @@
 
       <Spin spin_dist="1.57" error_code_id="{spin_error_code}"/>
 
-  WHY (measured, not a preference — platform decision AR-16 ①, evidence in
-  reports/runner-2026-09-01-go2-c2b-wiring.md §6-1): this SUT's locomotion policy
-  executes an IN-PLACE yaw command at **6 % of the commanded rate** (0.047 rad/s for a
-  commanded 0.8), while the SAME policy turns at **91 %** when it is also walking
-  (0.730 rad/s). The 4 control experiments in that report attribute this to the
-  pre-trained flat checkpoint itself, not to the wiring: the command slots are in the
-  right order, the policy does react to wz, and the angular observation matches
-  ground-truth yaw rate.
+  WHY (measured 2026-09-01, not a preference): this robot's locomotion policy executes
+  an IN-PLACE yaw command at **6 % of the commanded rate** (0.047 rad/s for a commanded
+  0.8), while the SAME policy turns at **91 %** when it is also walking (0.730 rad/s).
+  Four control experiments attribute this to the pre-trained flat checkpoint itself, not
+  to the wiring: the command slots are in the right order, the policy does react to wz,
+  and the angular observation matches ground-truth yaw rate.
 
   So `Spin 1.57` is a recovery this robot cannot perform: it would burn its whole
   `time_allowance` (BT default 10 s) rotating ~0.47 rad and then fail anyway, delaying

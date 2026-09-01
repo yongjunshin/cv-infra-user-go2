@@ -1,8 +1,8 @@
 // CPU unit tests for the tracker's pure math (no ROS, no sim, no model).
 //
-// The numbers below are the MEASURED ones this SUT actually runs against:
-// k = [366.4996, 0, 320, 0, 366.4997, 240] on a 640x480 32FC1 depth frame with step 2560
-// (platform C3 §4-3), a 0.877 m chair and a 1.73 m person (C0/W0 asset census).
+// The numbers below are the MEASURED ones this app actually runs against:
+// k = [366.4996, 0, 320, 0, 366.4997, 240] on a 640x480 32FC1 depth frame with step 2560,
+// a 0.877 m chair and a 1.73 m person.
 
 #include <cmath>
 #include <cstring>
@@ -75,12 +75,12 @@ TEST(BackProject, RangeScalesLinearlyWithDepth)
   EXPECT_NEAR(far_p.x, 3.0 * near_p.x, 1e-9);
 }
 
-TEST(BackProject, MatchesTheChairStandoffGeometryTheScenariosUse)
+TEST(BackProject, MatchesTheChairStandoffGeometry)
 {
-  // The TB scenarios put the target 1.2 m in front of the robot (standoff). A chair whose
-  // 0.877 m body then spans ~268 px is the arithmetic in the scenario headers; here we
-  // only assert the inverse direction the tracker uses: a centred bbox at 1.2 m is 1.2 m
-  // straight ahead of the camera, not somewhere off to the side.
+  // With the target 1.2 m in front of the robot, a chair whose 0.877 m body spans ~268 px
+  // is the forward arithmetic; here we only assert the inverse direction the tracker
+  // uses: a centred bbox at 1.2 m is 1.2 m straight ahead of the camera, not somewhere
+  // off to the side.
   const auto p = backProject(320.0, 300.0, 1.2, measuredK());
   EXPECT_NEAR(p.x, 0.0, 1e-12);
   EXPECT_NEAR(std::hypot(p.x, p.z), 1.2, 1e-9);

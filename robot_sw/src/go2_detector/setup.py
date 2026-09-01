@@ -14,7 +14,7 @@ setup(
     zip_safe=True,
     maintainer="CV-User team",
     maintainer_email="yjshin@etri.re.kr",
-    description="Thin YOLO11n CPU detector for the Go2 patrol SUT (cv-infra fixture).",
+    description="Thin YOLO11n CPU detector for the Go2 patrol app.",
     license="Apache-2.0",
     entry_points={
         "console_scripts": [

@@ -14,10 +14,10 @@ decode is genuinely array work, and it is already present on every ROS 2 Jazzy i
 
 import numpy as np
 
-#: Image encodings the node understands. The platform's go2 camera publishes `rgb8`
-#: (runner C3 topic inventory: /camera/image_raw, rgb8, 640x480, step 1920); `bgr8` is
+#: Image encodings the node understands. The go2 camera this app is developed against
+#: publishes `rgb8` (measured: /camera/image_raw, rgb8, 640x480, step 1920); `bgr8` is
 #: accepted too because that is what most real camera drivers emit and this app has to
-#: run outside cv-infra as well (master plan §1-8).
+#: run against those as well.
 SUPPORTED_ENCODINGS = ("rgb8", "bgr8")
 
 #: Throttle comparison slack, in seconds. Without it the throttle silently halves its
@@ -30,8 +30,8 @@ _PERIOD_EPS_S = 1e-6
 
 def stamp_to_seconds(sec, nanosec):
     """ROS time -> float seconds. The node throttles on the IMAGE stamp, not on its own
-    clock: the stamp is sim time (the platform stamps every sensor message with the sim
-    clock), so the detector's duty cycle is identical whatever the wall-clock RTF is."""
+    clock: the stamp is sim time (every sensor message is stamped with the sim clock), so
+    the detector's duty cycle is identical whatever the wall-clock RTF is."""
     return float(sec) + float(nanosec) * 1e-9
 
 
@@ -98,9 +98,9 @@ def select_detections(raw, conf_threshold, class_whitelist):
     Returns `[(class_name, score, (cx, cy, size_x, size_y)), ...]`.
 
     The whitelist is EMPTY by default and an empty whitelist means "publish everything"
-    (DESIGN.md: the detector does not know the mission; the class decision belongs to the
-    tracker/manager in U3). It exists only so a future scenario can cut the topic down
-    without touching this node.
+    (the detector does not know the mission; the class decision belongs to the
+    tracker/manager). It exists only so a deployment can cut the topic down without
+    touching this node.
     """
     allowed = frozenset(class_whitelist or ())
     kept = []

@@ -1,4 +1,4 @@
-# nav2_params.yaml — Nav2 parameters for the Go2 patrol SUT (navigation stage).
+# nav2_params.yaml — Nav2 parameters for the Go2 patrol app.
 #
 # PROVENANCE (no invented values). This file is the UPSTREAM STOCK Nav2 parameter set,
 # copied verbatim and then edited in the places listed below — each one carrying the
@@ -11,39 +11,39 @@
 #   stock sha256: 299f9002d6dcfbf661e532c99f32dda1766eab3afa3ab71a52378d80e7ef956f
 #
 # DELTA TABLE vs stock. Every row cites the MEASUREMENT it comes from; nothing here
-# is a preference. (U0 shipped row 1 only; rows 2-9 are U1, on the platform's C1/C2b/C3
-# workstation measurements + the AR-16 tuning direction.) Search for "go2 DELTA" to
-# find each edit in place.
+# is a preference. Search for "go2 DELTA" to find each edit in place.
 #
 #  # | where                                   | stock -> ours                | why (source)
 #  1 | local+global_costmap                    | robot_radius 0.22 -> footprint
 #    |                                         | 0.70 x 0.31 m rectangle      | Go2 body box (published size). Still a STARTING POINT, not a measurement.
-#  2 | amcl.base_frame_id                      | base_footprint -> base_link  | the sim publishes odom->base_link and NOTHING publishes base_footprint (C3 §2, tf measured). Upstream carter_navigation also uses base_link on this map.
-#  3 | collision_monitor.base_frame_id         | base_footprint -> base_link  | same frame, same reason. A collision monitor that cannot transform its base frame stops passing cmd_vel at all — silent immobility.
-#  4 | amcl.max_beams                          | 60 -> 360                    | upstream carter_navigation params for THIS warehouse/map use 360; our scan carries 3200 beams (C3 §4-4).
-#  5 | amcl.set_initial_pose / initial_pose    | (absent) -> true / SETTLED pose | the platform seeds /initialpose only on the BATCH path (runner.realign, per sample); a single `cv-infra run` never does. Upstream carter_navigation self-seeds the same way for the same reason. The VALUE is the pose the robot settles at after the policy's ~0.97 m activation transient (U1-measured live), not the declared spawn — see the block itself.
-#  6 | FollowPath(MPPI).wz_max                 | 1.9 -> 0.8                   | AR-16 ②: the policy tracks 0.730 rad/s of a commanded 0.8 while walking (91 %) — beyond that nothing is measured, and an untracked command makes MPPI's own model wrong. Upstream carter uses 0.7 rad/s here.
-#  7 | velocity_smoother.max/min_velocity[2]   | +-2.0 -> +-0.8               | same ceiling at the LAST shaping stage: nav2 remaps controller AND behavior cmd_vel to cmd_vel_nav -> velocity_smoother -> collision_monitor -> /cmd_vel (verified in the pinned nav2_bringup navigation_launch.py), so this one number caps every source.
-#  8 | general_goal_checker.yaw_goal_tolerance | 0.25 -> 3.15 (> pi)          | AR-16 ①: orientation-free goal. In-place yaw runs at 6 % of command (C2b §6-1), so a final-heading requirement is one this policy cannot satisfy; the platform oracle judges POSITION only (no goal_orientation_wxyz in scenarios/*.yaml).
-#  9 | bt_navigator.default_nav_to_pose_bt_xml | (absent) -> our no-spin tree | AR-16 ①: same measurement — see behavior_trees/navigate_to_pose_no_spin.xml, which is the stock tree with the `<Spin>` recovery line deleted and nothing else.
-# 10 | scan sources (both costmaps)            | (absent) -> min_obstacle_height 0.15 | C3 §7-7 + G-107 ③: the scan plane sits 0.43 m above the floor, so body pitch puts FLOOR returns in the scan (~4.3 m ahead at 0.1 rad). Height-filtering them is the SUT's job. 0.15 m is the threshold stock already uses for the same purpose in collision_monitor's scan source (below).
-# 11 | general_goal_checker.xy_goal_tolerance  | 0.25 -> 0.50                 | U1 live measurement: this policy does not execute the creep commands MPPI issues inside 0.4 m (0.035 m/s -> 4.6 % of it), so a 0.25 m checker never fires and the recovery ladder runs forever. Full sweep + belief-error numbers at the parameter.
+#  2 | amcl.base_frame_id                      | base_footprint -> base_link  | the sim publishes odom->base_link and NOTHING publishes base_footprint (tf measured). Upstream carter_navigation also uses base_link on this map.
+#  3 | collision_monitor.base_frame_id         | base_footprint -> base_link  | same frame, same reason. A collision monitor that cannot transform its base frame stops passing commands at all — silent immobility.
+#  4 | amcl.max_beams                          | 60 -> 360                    | upstream carter_navigation params for THIS warehouse/map use 360; our scan carries 3200 beams (measured).
+#  5 | amcl.set_initial_pose / initial_pose    | (absent) -> true / SETTLED pose | nothing publishes /initialpose in a plain run, so without this the filter has to global-localise first. Upstream carter_navigation self-seeds the same way for the same reason. The VALUE is the pose the robot settles at after the policy's ~0.97 m activation transient (measured live), not the declared spawn — see the block itself.
+#  6 | FollowPath(MPPI).wz_max                 | 1.9 -> 0.8                   | the policy tracks 0.730 rad/s of a commanded 0.8 while walking (91 %) — beyond that nothing is measured, and an untracked command makes MPPI's own model wrong. Upstream carter uses 0.7 rad/s here.
+#  7 | velocity_smoother.max/min_velocity[2]   | +-2.0 -> +-0.8               | same ceiling at the last shaping stage: nav2 remaps controller AND behavior cmd_vel to cmd_vel_nav -> velocity_smoother -> collision_monitor (verified in the pinned nav2_bringup navigation_launch.py), so this one number caps every autonomy source.
+#  8 | general_goal_checker.yaw_goal_tolerance | 0.25 -> 3.15 (> pi)          | orientation-free goal. In-place yaw runs at 6 % of command (measured), so a final-heading requirement is one this policy cannot satisfy, and this app's missions do not need one.
+#  9 | bt_navigator.default_nav_to_pose_bt_xml | (absent) -> our no-spin tree | same measurement — see behavior_trees/navigate_to_pose_no_spin.xml, which is the stock tree with the `<Spin>` recovery line deleted and nothing else.
+# 10 | scan sources (both costmaps)            | (absent) -> min_obstacle_height 0.15 | the scan plane sits 0.43 m above the floor, so body pitch puts FLOOR returns in the scan (~4.3 m ahead at 0.1 rad). Height-filtering them is this app's job. 0.15 m is the threshold stock already uses for the same purpose in collision_monitor's scan source (below).
+# 11 | general_goal_checker.xy_goal_tolerance  | 0.25 -> 0.50                 | live measurement: this policy does not execute the creep commands MPPI issues inside 0.4 m (0.035 m/s -> 4.6 % of it), so a 0.25 m checker never fires and the recovery ladder runs forever. Full sweep + belief-error numbers at the parameter.
+# 12 | collision_monitor.cmd_vel_out_topic     | cmd_vel -> cmd_vel_autonomy  | twist_mux owns /cmd_vel now and arbitrates this stack against teleop (../params/twist_mux.yaml). NOT cmd_vel_nav: nav2_bringup remaps velocity_smoother's INPUT to that name (verified in the pinned deb, composed and plain), so publishing the gate's output there is a feedback loop.
 #
 # EXPLICITLY NOT CHANGED (recorded so the next reader does not "fix" them blindly):
 #   - controller `FollowPath` = MPPI with `motion_model: "DiffDrive"`, vy unused.
 #     Treating the quadruped as diff-drive is already the stock behaviour even though
-#     the policy CAN strafe (0.49 of a commanded 0.5 m/s, C2b §6-1 control arm).
-#   - `FollowPath.vx_max: 0.5` is KEPT: that is the exact command C2b measured being
-#     tracked at 99 % (0.4957 m/s over 5.95 m), i.e. it is already inside the
-#     conservative band AR-16 ② asks for. Lowering a measured-good number would be
-#     invention.
+#     the policy CAN strafe (0.49 of a commanded 0.5 m/s, measured control arm).
+#   - `FollowPath.vx_max: 0.5` is KEPT: that is the exact command measured being tracked
+#     at 99 % (0.4957 m/s over 5.95 m), i.e. it is already inside the conservative band.
+#     Lowering a measured-good number would be invention.
 #   - NO RotationShimController is added (a common quadruped/nav2 recipe): it exists
 #     to rotate in place toward the path heading, which is precisely the 6 % motion.
-#     The scenarios instead START the robot facing the goal.
+#     Missions here start the robot facing the goal instead.
 #   - costmap sizes, inflation, plugin lists, planner, smoother: stock. Tune on live
 #     evidence only.
-#   - `enable_stamped_cmd_vel` is not set anywhere in stock (code default applies) —
-#     same situation as the carter fixture, which the platform adapter consumes fine.
+#   - `enable_stamped_cmd_vel` is not set anywhere in stock (code default applies), so
+#     everything on this path is plain geometry_msgs/Twist. That is what makes
+#     `use_stamped: false` load-bearing in ../params/twist_mux.yaml — read that file
+#     before changing either side.
 #   - `loopback_simulator.base_frame_id` stays `base_footprint`: that node is never
 #     launched here (it is nav2's own no-sim test harness).
 amcl:
@@ -55,7 +55,7 @@ amcl:
     alpha5: 0.2
     # go2 DELTA 2 (see header): stock "base_footprint" -> "base_link".
     # The simulator publishes exactly one moving transform, `odom -> base_link`
-    # (platform C3 §2, measured on the wire: `tf2_echo odom base_link` answers,
+    # (measured on the wire: `tf2_echo odom base_link` answers,
     # base_footprint does not exist anywhere in the TF tree). AMCL with a base
     # frame nobody publishes never localises and never says why.
     base_frame_id: "base_link"
@@ -71,7 +71,7 @@ amcl:
     laser_model_type: "likelihood_field"
     # go2 DELTA 4 (see header): stock 60 -> 360, the value upstream
     # carter_navigation uses for THIS warehouse + THIS map (same commit the map in
-    # ../maps/ was vendored from). Our scan carries 3200 beams (C3 §4-4 measured),
+    # ../maps/ was vendored from). Our scan carries 3200 beams (measured),
     # so 60 of them is a thin slice of the evidence available; AMCL only updates
     # every update_min_d 0.25 m, so the extra beams are affordable.
     max_beams: 360
@@ -96,36 +96,27 @@ amcl:
     z_short: 0.05
     scan_topic: scan
     # go2 DELTA 5 (see header): self-seed the particle filter.
-    # WHO SEEDS AMCL, measured on the platform side:
-    #   * batch path (`submit`, execution_settings.repeats) — the runner publishes
-    #     /initialpose with THAT sample's pose before every sample (runner.realign),
-    #     which overrides whatever is below;
-    #   * single path (`cv-infra run`) — nobody publishes /initialpose at all.
-    # So without this block a single-run mission starts with a uniform-ish prior and
-    # has to global-localise before it can plan. Upstream carter_navigation's params
-    # solve it the same way on this same map (`set_initial_pose: true` +
-    # `initial_pose: {x: -6.0, y: -1.0, yaw: 3.14159}`) — we differ only in yaw.
-    # VALUE = where the robot ACTUALLY STANDS when the SUT comes up, which is NOT the
-    # scenario's declared `initial_pose` (-6.0, -1.0, pi/2). The locomotion policy's
-    # activation transient walks the body ~0.97 m along its heading before it settles
-    # (C2b §6-2 measured 0.9436 m at yaw 0; U1 measured 0.968 m at yaw pi/2 on the live
-    # dev-world: declared (-6.0,-1.0) -> settled (-6.051,-0.032), yaw 1.564).
+    # Nothing publishes /initialpose in a plain run of this app, so without this block
+    # the mission starts with a uniform-ish prior and has to global-localise before it
+    # can plan. Upstream carter_navigation's params solve it the same way on this same
+    # map (`set_initial_pose: true` + `initial_pose: {x: -6.0, y: -1.0, yaw: 3.14159}`)
+    # — we differ only in yaw.
+    # VALUE = where the robot ACTUALLY STANDS once it is up, which is NOT where it was
+    # spawned (-6.0, -1.0, pi/2). The locomotion policy's activation transient walks the
+    # body ~0.97 m along its heading before it settles (measured 0.9436 m at yaw 0;
+    # 0.968 m at yaw pi/2 on the live sim: spawned (-6.0,-1.0) -> settled
+    # (-6.051,-0.032), yaw 1.564).
     #
-    # WHY THAT MATTERS (measured, U1 run 1): the transient happens BEFORE amcl is even
-    # up, so amcl sees no odom motion afterwards, never triggers a filter update
+    # WHY THAT MATTERS (measured live): the transient happens BEFORE amcl is even up, so
+    # amcl sees no odom motion afterwards, never triggers a filter update
     # (update_min_d 0.25 m), and starts the mission believing it is a metre behind
     # itself. nav2 logged `Begin navigating from current location (-6.00, -1.00)` while
-    # ground truth was (-6.05, -0.03). The mission still SUCCEEDED and GT passed within
-    # 0.020 m of the goal, but the stack then spent ~75 s of sim time and 6 recovery
-    # rounds closing a gap that was never real.
-    # Seeding the SETTLED pose is the consumer's side of that reconciliation — the
-    # platform's own contract says a spawn pose that disagrees with the SUT's
-    # localization init is the consumer's to reconcile (M1 InitialPose docstring).
+    # ground truth was (-6.05, -0.03). The mission still SUCCEEDED and ground truth
+    # passed within 0.020 m of the goal, but the stack then spent ~75 s of sim time and
+    # 6 recovery rounds closing a gap that was never real.
     #
-    # ⚠ ON THE BATCH PATH THIS IS OVERRIDDEN: the runner publishes /initialpose with
-    # each sample's DECLARED pose before every sample, so the same ~0.97 m offset comes
-    # back for TA. That one is the platform's to decide (realign before vs. after the
-    # settle) — reported, not worked around here.
+    # ⚠ ANYONE PUBLISHING /initialpose OVERRIDES THIS. Seed the SETTLED pose, not the
+    # spawn pose, or the same ~0.97 m offset comes straight back.
     set_initial_pose: true
     initial_pose:
       x: -6.051
@@ -149,18 +140,18 @@ bt_navigator:
       plugin: "nav2_bt_navigator::NavigateThroughPosesNavigator"
     # 'default_nav_through_poses_bt_xml' is left at its default:
     # nav2_bt_navigator/navigate_through_poses_w_replanning_and_recovery.xml
-    # (the platform's goal interface is NavigateToPose only — REQ-EXEC-007.)
+    # (this app drives NavigateToPose only.)
     #
     # go2 DELTA 9 (see header): the navigate-to-pose tree is OURS — the stock tree
     # with the `<Spin spin_dist="1.57">` recovery deleted, because in-place yaw runs
-    # at 6 % of command on this locomotion policy (C2b §6-1, AR-16 ①). The file
-    # documents the deletion and pins the stock sha256.
+    # at 6 % of command on this locomotion policy (measured). The file documents the
+    # deletion and pins the stock sha256.
     #
     # `$(find-pkg-share ...)` resolves at launch time: nav2_bringup loads this file
     # through ParameterFile(..., allow_substs=True) (verified in the pinned deb), so
     # ONE spelling works both inside the image (/opt/go2_ws/install/...) and in a
     # plain local `colcon build` overlay — which is what keeps the local dev loop
-    # (master plan §1-8) working without a second params file.
+    # working without a second params file.
     default_nav_to_pose_bt_xml: "$(find-pkg-share go2_bringup)/behavior_trees/navigate_to_pose_no_spin.xml"
 
     # plugin_lib_names is used to add custom BT plugins to the executor (vector of strings).
@@ -198,7 +189,7 @@ controller_server:
     general_goal_checker:
       stateful: True
       plugin: "nav2_controller::SimpleGoalChecker"
-      # go2 DELTA 11 (see header): stock 0.25 -> 0.50 m. MEASURED, U1 run 2 — this is
+      # go2 DELTA 11 (see header): stock 0.25 -> 0.50 m. MEASURED live — this is
       # the tolerance that makes the difference between "the mission ends" and "the
       # mission thrashes until timeout":
       #   * the robot passed within 0.018 m of the goal (ground truth) …
@@ -216,14 +207,11 @@ controller_server:
       #     runs forever. Six such rounds were logged before the goal finally completed.
       # 0.50 m is the smallest round number that is >= both the measured belief error
       # (0.387 m) and the believed distance at which MPPI enters that dead zone (0.4 m).
-      # It stays inside the platform-side budget: 0.50 + 0.39 = 0.89 < the 1.0 m the
-      # scenarios declare as reached_goal's position tolerance.
-      # ⚠ The scenarios QUOTE this number in their tolerance rationale — change both.
       xy_goal_tolerance: 0.5
       # go2 DELTA 8 (see header): > pi = "any final heading satisfies this goal".
-      # This mission has no final-heading requirement (the platform oracle judges
-      # position only — no goal_orientation_wxyz in any scenario here), and this
-      # policy's in-place yaw is 6 % of command (C2b §6-1), so a 0.25 rad final
+      # This app's missions have no final-heading requirement — the patrol manager gets
+      # its arrival heading out of the DRIVE, not out of the goal checker — and this
+      # policy's in-place yaw is 6 % of command (measured), so a 0.25 rad final
       # alignment would spend the whole mission budget rotating AFTER arriving.
       # pi is the largest possible yaw error, so 3.15 is exact, not arbitrary.
       yaw_goal_tolerance: 3.15
@@ -246,7 +234,7 @@ controller_server:
       vx_min: -0.35
       vy_max: 0.5
       # go2 DELTA 6 (see header): stock 1.9 -> 0.8 rad/s. Measured tracking while
-      # walking: 0.730 rad/s for a commanded 0.8 (91 %, C2b §6-1). Nothing above 0.8
+      # walking: 0.730 rad/s for a commanded 0.8 (91 %, measured). Nothing above 0.8
       # has been measured, and MPPI scores trajectories with a model that assumes the
       # command is executed — so an unreachable wz_max makes it prefer turns the robot
       # cannot make. Upstream carter_navigation caps this warehouse at 0.7 rad/s.
@@ -299,10 +287,10 @@ controller_server:
         # That warning is triggered by DELTA 1 (a polygon footprint next to a critic
         # that checks a circle) and is accepted deliberately: the circle it falls back
         # to is the CIRCUMSCRIBED one (0.383 m for our 0.70 x 0.31 box), i.e. the
-        # conservative direction, and the aisle this SUT drives has 1.35-2.80 m of
+        # conservative direction, and the aisle this app drives has 1.35-2.80 m of
         # free-space clearance (measured on ../maps/*.png). Turning it on costs a
         # footprint collision check per trajectory point per MPPI sample. Revisit when
-        # a scenario actually drives a tight gap.
+        # a mission actually drives a tight gap.
         consider_footprint: false
         collision_cost: 1000000.0
         near_goal_distance: 1.0
@@ -347,10 +335,10 @@ local_costmap:
       height: 3
       resolution: 0.05
       # go2 DELTA (see file header): stock `robot_radius: 0.22` -> Go2 body box
-      # 0.70 m (x) x 0.31 m (y), centred on base_link. STILL UNMEASURED (U1): the
-      # platform's C1 report gives the robot's prim tree and 19 rigid bodies but no
-      # body bbox, so this stays the published body size. It is conservative for
-      # planning (the real standing footprint is not larger).
+      # 0.70 m (x) x 0.31 m (y), centred on base_link. STILL UNMEASURED: nobody has
+      # measured the standing body box on this robot, so this stays the published body
+      # size. It is conservative for planning (the real standing footprint is not
+      # larger).
       footprint: "[[0.35, 0.155], [0.35, -0.155], [-0.35, -0.155], [-0.35, 0.155]]"
       plugins: ["voxel_layer", "inflation_layer"]
       inflation_layer:
@@ -371,9 +359,9 @@ local_costmap:
           topic: /scan
           # go2 DELTA 10 (see header): drop returns that came off the FLOOR.
           # The lidar rides 0.15 m above base_link and base settles at ~0.28 m
-          # (C1/C3 measured), so the scan plane is ~0.43 m up; when the body pitches
-          # 0.1 rad the beam reaches the floor ~4.3 m ahead and paints a phantom wall
-          # (C3 §7-7). Those returns arrive at z ~ 0, real obstacles at z ~ 0.43, so a
+          # (measured), so the scan plane is ~0.43 m up; when the body pitches 0.1 rad
+          # the beam reaches the floor ~4.3 m ahead and paints a phantom wall
+          # (measured). Those returns arrive at z ~ 0, real obstacles at z ~ 0.43, so a
           # height gate separates them cleanly. 0.15 is not a new number: it is the
           # threshold stock already uses for the same purpose in collision_monitor's
           # scan source at the bottom of this file.
@@ -399,10 +387,10 @@ global_costmap:
       global_frame: map
       robot_base_frame: base_link
       # go2 DELTA (see file header): stock `robot_radius: 0.22` -> Go2 body box
-      # 0.70 m (x) x 0.31 m (y), centred on base_link. STILL UNMEASURED (U1): the
-      # platform's C1 report gives the robot's prim tree and 19 rigid bodies but no
-      # body bbox, so this stays the published body size. It is conservative for
-      # planning (the real standing footprint is not larger).
+      # 0.70 m (x) x 0.31 m (y), centred on base_link. STILL UNMEASURED: nobody has
+      # measured the standing body box on this robot, so this stays the published body
+      # size. It is conservative for planning (the real standing footprint is not
+      # larger).
       footprint: "[[0.35, 0.155], [0.35, -0.155], [-0.35, -0.155], [-0.35, 0.155]]"
       resolution: 0.05
       track_unknown_space: true
@@ -533,10 +521,11 @@ velocity_smoother:
     scale_velocities: False
     feedback: "OPEN_LOOP"
     # go2 DELTA 7 (see header): [vx, vy, wz] — wz 2.0 -> 0.8, matching MPPI's wz_max.
-    # This is the LAST stage before /cmd_vel and every source passes through it
-    # (controller AND recovery behaviours are remapped to cmd_vel_nav in the pinned
-    # nav2_bringup launch), so it is the one place that can promise the robot never
-    # gets a turn rate it was never measured executing.
+    # This is the last SHAPING stage before the collision gate, and every autonomy
+    # source passes through it (controller AND recovery behaviours are remapped to
+    # cmd_vel_nav in the pinned nav2_bringup launch), so it is the one place that can
+    # promise the robot never gets a turn rate it was never measured executing.
+    # Downstream of the gate, twist_mux arbitrates autonomy against teleop onto /cmd_vel.
     max_velocity: [0.5, 0.0, 0.8]
     min_velocity: [-0.5, 0.0, -0.8]
     max_accel: [2.5, 0.0, 3.2]
@@ -549,12 +538,22 @@ velocity_smoother:
 collision_monitor:
   ros__parameters:
     # go2 DELTA 3 (see header): same frame repair as amcl. This node gates every
-    # /cmd_vel the robot ever receives, so a base frame nothing publishes does not
-    # degrade gracefully — it stops the robot with no obvious cause.
+    # autonomy command the robot ever receives, so a base frame nothing publishes does
+    # not degrade gracefully — it stops the robot with no obvious cause.
     base_frame_id: "base_link"
     odom_frame_id: "odom"
     cmd_vel_in_topic: "cmd_vel_smoothed"
-    cmd_vel_out_topic: "cmd_vel"
+    # go2 DELTA 12 (see header): stock "cmd_vel" -> "cmd_vel_autonomy".
+    # NOT "cmd_vel", because twist_mux owns that name now: it arbitrates this stack
+    # against a teleop source and is the only publisher the robot listens to
+    # (../params/twist_mux.yaml).
+    # NOT "cmd_vel_nav" either, and that one is a trap worth spelling out: the pinned
+    # nav2_bringup navigation_launch.py remaps cmd_vel -> cmd_vel_nav on
+    # controller_server, behavior_server AND velocity_smoother's INPUT, in both the
+    # composed and the plain bring-up (verified in the pinned deb). Publishing the
+    # collision monitor's OUTPUT there would feed the smoother its own gated output —
+    # a loop, not a chain.
+    cmd_vel_out_topic: "cmd_vel_autonomy"
     state_topic: "collision_monitor_state"
     transform_tolerance: 0.2
     source_timeout: 1.0

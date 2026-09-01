@@ -13,8 +13,13 @@ __pycache__/
 Thumbs.db
 *.swp
 
-# NOTE: model weights are deliberately NOT ignored here. The locomotion policy
-# (`sut.locomotion_policy`, decision 2026-08-31 D2) may legitimately be committed
-# next to its scenario, and an ignore rule would make it SILENTLY absent from the
-# verification inputs (the G-94 failure mode). yolo11n (U2) is not committed either
-# way — it is fetched by digest at image build time and sealed into the image (D1-A).
+# Local secrets / consents. `.env` carries the Isaac Sim EULA + privacy consent the
+# OWNER of this machine gives personally — consent is a per-person act, so the file
+# is never committed. Copy `.env.example` and fill it in yourself.
+.env
+
+# NOTE: model weights are deliberately NOT ignored. The locomotion policy
+# (robot_sw/models/locomotion/policy.pt) is a versioned artifact of this robot —
+# retraining replaces the file and its policy_meta.yaml together, and the diff
+# should be visible. yolo11n is not committed either way — it is fetched by digest
+# at image build time.

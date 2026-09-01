@@ -2,20 +2,19 @@
 
     /camera/image_raw  (sensor_msgs/Image)  ->  /detections (vision_msgs/Detection2DArray)
 
-Design rules it obeys (patrol app DESIGN.md, master plan §1-4/§1-7):
+Design rules it obeys:
   * **Publish what it sees.** No target/class decision here — the class filter is empty
-    by default. Deciding "is that the patrol target?" is the tracker/manager's job (U3),
-    so this node stays reusable and testable on its own.
-  * **CPU only.** The weights are sealed into the SUT image at build time (decision
-    2026-08-31 D1-A) and inference runs on CPU; the platform never gives this container a
-    GPU (D1-P2). `torch_threads` caps how much of the CI host's CPU it takes.
+    by default. Deciding "is that the patrol target?" is the tracker/manager's job, so
+    this node stays reusable and testable on its own.
+  * **CPU only.** The weights are sealed into the app image at build time and inference
+    runs on CPU; this container is never given a GPU. `torch_threads` caps how much of
+    the host's CPU it takes.
   * **Latest frame only, at a fixed rate.** Subscription depth is 1 and the throttle is
     keyed on the IMAGE stamp (= sim time), so a slow wall clock cannot turn into a
     growing queue of stale frames, and the detector's duty cycle in sim time is the same
     on a fast and a slow machine.
 
-Runs anywhere a `sensor_msgs/Image` shows up — cv-infra's runner, the platform's
-dev-world, a rosbag, or a real camera (master plan §1-8, local-first development).
+Runs anywhere a `sensor_msgs/Image` shows up — a simulator, a rosbag, or a real camera.
 """
 
 import os
@@ -93,8 +92,8 @@ class Go2Detector(Node):
 
         # Images: BEST_EFFORT + depth 1. BEST_EFFORT is the compatible choice (a
         # BEST_EFFORT subscription matches both RELIABLE and BEST_EFFORT publishers,
-        # not the other way round) — the platform publishes RELIABLE (runner C3 §2),
-        # a real camera driver publishes SensorDataQoS. Depth 1 is what makes "latest
+        # not the other way round) — a sim bridge typically publishes RELIABLE, a real
+        # camera driver publishes SensorDataQoS. Depth 1 is what makes "latest
         # frame only" true in the middleware instead of only in our throttle.
         self._sub = self.create_subscription(
             Image,
@@ -119,13 +118,13 @@ class Go2Detector(Node):
         silently publishes nothing is worse than a container that fails to start."""
         if not os.path.isfile(model_path):
             raise FileNotFoundError(
-                f"model not found: {model_path} (the SUT image seals it at build time; "
+                f"model not found: {model_path} (the app image seals it at build time; "
                 "override with -p model_path:=<path> when running outside the image)"
             )
         # Imported here, not at module import: keeps `detection_logic` unit tests free of
         # torch/ultralytics, and lets the env guards below land before ultralytics reads
         # them. YOLO_AUTOINSTALL=false turns "pip-install a missing dep at runtime" into
-        # a loud error — a sealed SUT must never reach out to the network mid-run.
+        # a loud error — a sealed app must never reach out to the network mid-run.
         os.environ.setdefault("YOLO_CONFIG_DIR", "/tmp/ultralytics")
         os.environ.setdefault("YOLO_AUTOINSTALL", "false")
         import torch
@@ -174,7 +173,7 @@ class Go2Detector(Node):
     def _to_msg(self, header, kept):
         """Detection2DArray stamped with the SOURCE image's header — same sim time, same
         camera frame (`go2_camera`, a ROS optical frame), so a consumer can back-project
-        a box with camera_info and let tf2 do the rest (runner C3 §2-2)."""
+        a box with camera_info and let tf2 do the rest."""
         out = Detection2DArray()
         out.header = header
         for name, score, (cx, cy, size_x, size_y) in kept:

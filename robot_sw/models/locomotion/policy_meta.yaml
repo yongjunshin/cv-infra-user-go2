@@ -1,0 +1,70 @@
+# policy_meta.yaml — the contract of the policy sitting next to it (policy.pt).
+#
+# WHY THIS FILE EXISTS, AND WHY IT IS HERE AND NOT IN sim/patrol_world.py.
+# The numbers below are TRAINING artefacts: they describe the plant the network
+# was trained against, so they change the moment the policy is retrained — a new
+# action scale, different PD gains, a different control rate, a different stance,
+# a different observation. The weights and these numbers are therefore ONE
+# shipment, and they live in one directory: swap policy.pt without swapping this
+# file and the robot is being driven by a plant the network has never seen, which
+# does not raise anything — it just walks badly.
+#
+# sim/patrol_world.py holds the other half of the split: HARDWARE-TWIN constants
+# (the robot USD, the spawn height, the joint order, the motor's torque/speed
+# limits, the sensor mounts and optics, the publish rates). Those describe the
+# robot and its instruments and only change when the ROBOT changes, so they do
+# not belong next to a set of weights.
+#
+# The harness reads this file from the directory of whatever --policy points at,
+# validates that every key below is present, and refuses to run if `obs_layout`
+# is not the one layout it implements.
+
+# Name of the observation the network expects. The harness assembles exactly one
+# layout and compares this string against it — a retrain that reorders a term or
+# adds one (a height scan, say) must mint a NEW name here, so that an old harness
+# refuses the new policy instead of feeding it 48 numbers in the wrong order.
+#   go2_flat_obs48_v1 = 48-D, no normalization, no noise, no clipping:
+#     [ 0: 3] base linear velocity  (body frame)
+#     [ 3: 6] base angular velocity (body frame)
+#     [ 6: 9] gravity direction     (body frame, unit vector)
+#     [ 9:12] velocity command (vx, vy, wz) — /cmd_vel, verbatim
+#     [12:24] joint positions minus default_joint_pos
+#     [24:36] joint velocities
+#     [36:48] the previous step's RAW network output (pre-scale); zeros at reset
+obs_layout: go2_flat_obs48_v1
+
+# Physics steps per policy step. The harness runs physics at 200 Hz, so 4 makes
+# the control rate 50 Hz — the rate the network was trained at. The motor torque
+# is still recomputed EVERY physics step; only the network forward is decimated.
+decimation: 4
+
+# Joint position target = default_joint_pos + action_scale * raw_network_output.
+# No clipping on the output, by training design.
+action_scale: 0.25
+
+# PD gains of the actuator model, N·m/rad and N·m·s/rad. They are the POLICY's
+# gains, not the simulator's: the harness zeroes the simulator's own drive gains
+# and applies the torque these produce as joint efforts, clamped by the motor's
+# (hardware) torque/speed curve.
+kp: 25.0
+kd: 0.5
+
+# Default stance, radians — the offset the action is added to, and the reference
+# the observation's joint positions are measured against.
+# A MAPPING, not a list: the ordering of the action vector is the harness's
+# constant (hips, then thighs, then calves; FL, FR, RL, RR within each), and a
+# bare list is the thing that quietly gets edited into the wrong order by someone
+# who cannot see that constant. Named joints cannot be misordered.
+default_joint_pos:
+  FL_hip_joint: 0.1     # hips: left +0.1, right -0.1
+  FR_hip_joint: -0.1
+  RL_hip_joint: 0.1
+  RR_hip_joint: -0.1
+  FL_thigh_joint: 0.8   # thighs: front 0.8, rear 1.0
+  FR_thigh_joint: 0.8
+  RL_thigh_joint: 1.0
+  RR_thigh_joint: 1.0
+  FL_calf_joint: -1.5   # calves: all -1.5
+  FR_calf_joint: -1.5
+  RL_calf_joint: -1.5
+  RR_calf_joint: -1.5

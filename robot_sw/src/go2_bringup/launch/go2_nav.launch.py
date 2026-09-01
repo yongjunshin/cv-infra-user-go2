@@ -1,31 +1,29 @@
-# go2_nav.launch.py — headless Nav2 bringup for the Unitree Go2 patrol SUT.
+# go2_nav.launch.py — headless Nav2 bringup for the Unitree Go2.
 #
 # do-not-reinvent: this is assembly glue, NOT a reimplementation. It composes
 # `nav2_bringup/bringup_launch.py` (apt ros-jazzy-nav2-bringup, pinned in the
-# Dockerfile) with this package's Nav2 param set. RViz is never started (M8 §3.9 D-O:
-# rviz in headless CI is unnecessary and a failure source).
+# Dockerfile) with this package's Nav2 param set. RViz is never started: headless is
+# the point, and a GUI is one more thing to fail.
 #
-# SUT contract surface exposed by this launch (see ../../../../README.md):
-#   - accepts use_sim_time (default True) -> external /clock             (REQ-EXEC-003)
-#   - nav2 bt_navigator exposes nav2_msgs/action/NavigateToPose
-#       @ /navigate_to_pose                                             (REQ-EXEC-007)
-#   - subscribes /scan + /odom, publishes /cmd_vel                      (REQ-EXEC-006)
+# What this brings up:
+#   - map_server + amcl on the vendored map (unless use_localization:=False)
+#   - the nav2 stack, serving nav2_msgs/action/NavigateToPose @ /navigate_to_pose
+#   - twist_mux, which arbitrates the stack's cmd_vel_autonomy against a human's
+#     cmd_vel_teleop and publishes the winner on /cmd_vel
+#   - it subscribes /scan + /odom, and accepts use_sim_time (default True)
 #
-# MAP (U1). `map` now defaults to this package's vendored occupancy grid
+# MAP. `map` defaults to this package's vendored occupancy grid
 # (../maps/carter_warehouse_navigation.yaml — see ../maps/README.md for its upstream
 # commit + digests and for WHY the carter map is the right map for the go2 scene), so
-# map_server + amcl come up by default and the robot localizes in the same frame the
-# scenarios express their goals in.
+# map_server + amcl come up by default and the robot localizes in the map frame.
 #
-# `use_localization:=False` still means "run the nav stack WITHOUT localization"
-# (upstream argument, present in nav2_bringup 1.3.12 — verified in the pinned deb, not
-# assumed). That is the U0 dry-run mode and stays available for bringing the stack up
-# against a sim that has no map.
+# `use_localization:=False` means "run the nav stack WITHOUT localization" (upstream
+# argument, present in nav2_bringup 1.3.12 — verified in the pinned deb, not assumed).
+# It stays available for bringing the stack up against a sim that has no map.
 #
-# Local development (the 1st-class requirement, master plan §1-8): this launch is
-# plain ROS 2 — `ros2 launch go2_bringup go2_nav.launch.py` works against the
-# platform's dev-world (D-7) or any other sim/robot publishing the same topics,
-# with no cv-infra in the loop.
+# Local development is 1st-class: this launch is plain ROS 2 —
+# `ros2 launch go2_bringup go2_nav.launch.py` works against any sim or robot publishing
+# the same topics.
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo
@@ -36,6 +34,7 @@ from launch.substitutions import (
     PathJoinSubstitution,
     PythonExpression,
 )
+from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -73,7 +72,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "use_sim_time",
                 default_value="True",
-                description="Use the external simulator /clock (REQ-EXEC-003).",
+                description="Use the external simulator /clock.",
             ),
             DeclareLaunchArgument(
                 "map",
@@ -102,13 +101,6 @@ def generate_launch_description():
                 default_value="True",
                 description="Automatically transition the nav2 lifecycle nodes up.",
             ),
-            # Accepted for SUT-contract compatibility (M8 §3.9 documents `rviz:=false`).
-            # This launch is headless by construction: RViz is never started regardless.
-            DeclareLaunchArgument(
-                "rviz",
-                default_value="False",
-                description="No-op: headless launch never starts RViz.",
-            ),
             LogInfo(
                 condition=UnlessCondition(use_localization),
                 msg=(
@@ -126,6 +118,25 @@ def generate_launch_description():
                     "params_file": params_file,
                     "autostart": autostart,
                 }.items(),
+            ),
+            # ── /cmd_vel arbitration ───────────────────────────────────────────────
+            # Lives HERE, not in the patrol launch, because a bare nav run has to
+            # produce /cmd_vel too: nav2's collision monitor now publishes on
+            # cmd_vel_autonomy (../params/nav2_params.yaml DELTA 12) and this node is
+            # what turns that into the topic the robot listens to.
+            Node(
+                package="twist_mux",
+                executable="twist_mux",
+                name="twist_mux",  # must match the yaml's root key
+                output="screen",
+                parameters=[
+                    PathJoinSubstitution(
+                        [FindPackageShare("go2_bringup"), "params", "twist_mux.yaml"]
+                    ),
+                    # the 0.5 s input timeouts are measured on this clock
+                    {"use_sim_time": use_sim_time},
+                ],
+                remappings=[("cmd_vel_out", "cmd_vel")],
             ),
         ]
     )

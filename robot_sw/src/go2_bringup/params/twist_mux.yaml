@@ -1,0 +1,26 @@
+# twist_mux.yaml — /cmd_vel arbitration between the autonomy stack and a human.
+#
+#   nav2 (... -> collision_monitor) --cmd_vel_autonomy--> twist_mux --> /cmd_vel
+#   any teleop source ------------- cmd_vel_teleop -----------^
+#
+# Priorities: teleop (100) beats autonomy (10) whenever it is publishing; 0.5 s of
+# silence on an input releases it. To take over by hand:
+#   ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -r cmd_vel:=cmd_vel_teleop
+#
+# ⚠ use_stamped MUST stay false. Jazzy twist_mux (4.5.0) defaults to
+# geometry_msgs/TwistStamped (measured: the node logs the default and opens
+# TwistStamped endpoints), while this nav2 configuration publishes plain Twist
+# (enable_stamped_cmd_vel unset = false in Jazzy). With the default, the mux
+# subscribes a type nobody publishes and /cmd_vel goes silent with no error anywhere.
+twist_mux:
+  ros__parameters:
+    use_stamped: false
+    topics:
+      navigation:
+        topic: cmd_vel_autonomy
+        timeout: 0.5
+        priority: 10
+      teleop:
+        topic: cmd_vel_teleop
+        timeout: 0.5
+        priority: 100

@@ -1,12 +1,11 @@
-# constraints-detector.txt — the pip half of the SUT image, fully pinned.
+# constraints-detector.txt — the pip half of the app image, fully pinned.
 #
-# WHY THIS FILE EXISTS (AR-11, measured again here on 2026-09-01):
+# WHY THIS FILE EXISTS (measured 2026-09-01):
 #   `pip install ultralytics` does NOT respect a torch pin that was installed before it.
 #   Resolution of `ultralytics==8.4.136` on this base image, with NOTHING pre-installed,
 #   pulls **torch 2.13.0 (CUDA build) + triton + 16 nvidia-* wheels** (measured with
-#   `pip install --dry-run --report`, U2 report §3). That is several GB of CUDA runtime
-#   inside a container the platform deliberately gives NO GPU to (decision 2026-08-31
-#   D1-P2: user model compute never lands on the verification host's GPU ledger).
+#   `pip install --dry-run --report`). That is several GB of CUDA runtime inside a
+#   container that runs its detector on CPU by design and is given no GPU.
 #   Installing the CPU wheels first is NOT enough by itself — torchvision from PyPI is
 #   the CUDA build and drags a matching CUDA torch back in. This file is what makes the
 #   pin stick, and the Dockerfile turns it into a build-time assertion (a CUDA torch

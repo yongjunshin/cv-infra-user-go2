@@ -1,12 +1,13 @@
 // CPU unit tests for the patrol manager's pure decisions (no ROS, no sim).
 //
-// The coordinates below are the ones the TB scenarios actually use: aisle at x = -6.0,
-// target at (-6.0, 5.2), verdict goal at the app's own standoff distance 2.0 m in front of
-// it at (-6.0, 3.2), robot walking up the aisle from y < 0. Frame = 640x480 (measured
-// camera stream). 2.0 m is MEASURED, not chosen: this detector reads the chair at
-// 0.79-0.87 between 1.7 and 3.2 m and collapses to `bench` below ~1.3 m (U3 report §6-2).
+// The coordinates below are this app's own default-route geometry: the aisle at
+// x = -6.0, a target at (-6.0, 5.2), the standoff pose 2.0 m in front of it at
+// (-6.0, 3.2), robot walking up the aisle from y < 0. Frame = 640x480 (measured camera
+// stream). 2.0 m is MEASURED, not chosen: this detector reads the chair at 0.79-0.87
+// between 1.7 and 3.2 m and collapses to `bench` below ~1.3 m.
 
 #include <cmath>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -14,6 +15,7 @@
 #include "go2_patrol_manager/patrol_logic.hpp"
 
 using go2_patrol_manager::bearing;
+using go2_patrol_manager::classMatches;
 using go2_patrol_manager::distance;
 using go2_patrol_manager::parseWaypoints;
 using go2_patrol_manager::Pose2;
@@ -43,8 +45,8 @@ TEST(StandoffPose, StandsBetweenTheRobotAndTheTarget)
 
 TEST(StandoffPose, FacesTheTargetSoTheApproachEndsLookingAtIt)
 {
-  // This is the property AR-16/AR-18 make load-bearing: the arrival heading must come out
-  // of the drive, because this SUT cannot pivot into it afterwards.
+  // This is the load-bearing property: the arrival heading must come out of the drive,
+  // because this robot cannot pivot into it afterwards.
   const auto pose = standoffPose(-6.0, 5.2, -6.0, 1.2, kStandoff, 0.0);
   EXPECT_NEAR(pose.yaw, M_PI / 2.0, 1e-9);  // +y, straight at the target
 
@@ -52,16 +54,6 @@ TEST(StandoffPose, FacesTheTargetSoTheApproachEndsLookingAtIt)
   EXPECT_NEAR(from_side.yaw, M_PI, 1e-9);   // approached from +x -> looks back along -x
   EXPECT_NEAR(from_side.x, -6.0 + kStandoff, 1e-9);
   EXPECT_NEAR(from_side.y, 5.2, 1e-9);
-}
-
-TEST(StandoffPose, LandsOnTheScenarioGoal)
-{
-  // The scenario's goal IS the standoff point (2.0 m in front of the target), so a robot
-  // that stops where this function says lands on the verdict anchor. Asserted here so a
-  // standoff change cannot silently walk away from the oracles' radii.
-  const auto pose = standoffPose(-6.0, 5.2, -6.0, 1.2, kStandoff, 0.0);
-  EXPECT_NEAR(pose.x, -6.0, 1e-9);
-  EXPECT_NEAR(pose.y, 3.2, 1e-9);  // = the TB goal
 }
 
 TEST(StandoffPose, DegenerateRobotOnTopOfTargetKeepsTheCurrentHeading)
@@ -80,8 +72,8 @@ TEST(ScreenCondition, PassesForACentredChairAtTheStandoff)
 
 TEST(ScreenCondition, RejectsATargetThatIsTooSmallInFrame)
 {
-  // MEASURED: the same chair is a 64 px box at 5.5 m — seen, but not "large" (AR-24), and
-  // a robot that "held" it from there did not walk up to anything.
+  // MEASURED: the same chair is a 64 px box at 5.5 m — seen, but not "large", and a robot
+  // that "held" it from there did not walk up to anything.
   EXPECT_FALSE(screenConditionOk(320.0, 64.0, kWidth, kHeight, kCentreTol, kMinHeight));
 }
 
@@ -107,6 +99,35 @@ TEST(ScreenCondition, RejectsDegenerateGeometryInsteadOfDividingByZero)
   EXPECT_FALSE(screenConditionOk(320.0, 0.0, kWidth, kHeight, kCentreTol, kMinHeight));
 }
 
+TEST(ClassMatches, EmptyGoalMeansAnyConfiguredClass)
+{
+  // The default mission: "find me one of the classes this app is configured to look for".
+  const std::vector<std::string> configured{"person", "chair"};
+  EXPECT_TRUE(classMatches("person", "", configured));
+  EXPECT_TRUE(classMatches("chair", "", configured));
+  EXPECT_FALSE(classMatches("dog", "", configured));
+}
+
+TEST(ClassMatches, NonEmptyGoalNarrowsToExactlyThatClass)
+{
+  // A goal that names a class means THAT class — a configured-but-unasked-for class is
+  // not a substitute, or "find me a person" would end at the first chair on the route.
+  const std::vector<std::string> configured{"person", "chair"};
+  EXPECT_TRUE(classMatches("chair", "chair", configured));
+  EXPECT_FALSE(classMatches("person", "chair", configured));
+}
+
+TEST(ClassMatches, MatchIsExactAndCaseSensitive)
+{
+  // COCO class names are lowercase and the detector emits them verbatim, so a
+  // near-miss spelling must NOT match: a goal nobody can satisfy has to be visible as a
+  // route-exhausted abort, not answered by the wrong object.
+  const std::vector<std::string> configured{"person", "chair"};
+  EXPECT_FALSE(classMatches("Chair", "chair", configured));
+  EXPECT_TRUE(classMatches("chair", "chair", configured));
+  EXPECT_FALSE(classMatches("Chair", "", configured));
+}
+
 TEST(ParseWaypoints, AcceptsTheDefaultRouteAndPreservesOrder)
 {
   std::vector<Waypoint> route;
@@ -125,17 +146,6 @@ TEST(ParseWaypoints, RejectsAHalfWrittenRoute)
   EXPECT_FALSE(parseWaypoints({}, route));
   ASSERT_EQ(route.size(), 1U);  // untouched: the caller's route is not half-overwritten
   EXPECT_NEAR(route[0].x, 9.0, 1e-12);
-}
-
-TEST(ParseWaypoints, KeepsTheDefaultRouteAwayFromTheVerdictGoal)
-{
-  // A perception-dead run must FAIL, not coast to a pass by walking the patrol route: the
-  // route's closest waypoint has to stay outside the oracles' radii around (-6.0, 3.2).
-  std::vector<Waypoint> route;
-  ASSERT_TRUE(parseWaypoints({-5.5, 0.8, -6.0, 1.2}, route));
-  for (const auto & wp : route) {
-    EXPECT_GE(distance(wp.x, wp.y, -6.0, 3.2), 2.0);
-  }
 }
 
 TEST(TravelYaw, PointsAlongTheDirectionOfTravel)

@@ -15,6 +15,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(vision_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
+find_package(go2_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -24,15 +25,15 @@ target_include_directories(patrol_manager_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 ament_target_dependencies(patrol_manager_node
-  rclcpp rclcpp_action geometry_msgs sensor_msgs vision_msgs nav2_msgs tf2 tf2_ros
-  tf2_geometry_msgs)
+  rclcpp rclcpp_action geometry_msgs sensor_msgs vision_msgs nav2_msgs go2_msgs tf2
+  tf2_ros tf2_geometry_msgs)
 
 install(TARGETS patrol_manager_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 
 if(BUILD_TESTING)
-  # Standoff geometry + hold condition + route parsing only — the three decisions that
-  # can be wrong for an entire GPU run without crashing anything.
+  # Standoff geometry + hold condition + class matching + route parsing only — the
+  # decisions that can be wrong for an entire live run without crashing anything.
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_patrol_logic test/test_patrol_logic.cpp)
   target_include_directories(test_patrol_logic PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)

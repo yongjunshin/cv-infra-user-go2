@@ -1,26 +1,28 @@
 // patrol_logic.hpp — the patrol manager's PURE decisions (no ROS, no sim, no clock).
 //
-// Three things in the manager can be silently wrong for a whole GPU run:
+// Three things in the manager can be silently wrong for a whole live run:
 //   1. WHERE to stand when a target is found (standoff on the wrong side = the robot
-//      drives THROUGH the target, and `no_collision` is the one oracle that then fails);
+//      drives THROUGH the target instead of stopping in front of it);
 //   2. WHICH WAY to face there (the wrong yaw = the target is out of frame and the hold
-//      condition can never be met — this SUT cannot fix it by turning in place, see below);
-//   3. WHEN the target counts as "held on screen" (AR-24: centred AND large).
+//      condition can never be met — this robot cannot fix it by turning in place, see
+//      below);
+//   3. WHEN the target counts as "held on screen" (centred AND large).
 // They are pure functions here so they are asserted on a CPU in milliseconds.
 //
-// ⚠ Why the standoff YAW matters so much on THIS robot (AR-16/AR-18, MEASURED):
-// the locomotion policy executes in-place yaw at ~6 % of the commanded rate and any
-// command below ~0.2 m/s at ~5-23 % (platform C2b §6-1, U1 §6-2). So the app must not
-// plan anything that needs a pivot or a creep: the arrival heading has to come out of the
-// DRIVE itself. That is why the standoff pose is always "on the segment from the target
-// toward the robot, facing the target" — driving to it is a straight approach whose final
-// heading already points at the target.
+// ⚠ Why the standoff YAW matters so much on THIS robot (MEASURED): the locomotion policy
+// executes in-place yaw at ~6 % of the commanded rate and any command below ~0.2 m/s at
+// ~5-23 %. So the app must not plan anything that needs a pivot or a creep: the arrival
+// heading has to come out of the DRIVE itself. That is why the standoff pose is always
+// "on the segment from the target toward the robot, facing the target" — driving to it is
+// a straight approach whose final heading already points at the target.
 
 #ifndef GO2_PATROL_MANAGER__PATROL_LOGIC_HPP_
 #define GO2_PATROL_MANAGER__PATROL_LOGIC_HPP_
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <string>
 #include <vector>
 
 namespace go2_patrol_manager
@@ -75,13 +77,13 @@ inline Pose2 standoffPose(
   return pose;
 }
 
-/// Is the target held on screen? (AR-24: "whole and large", the condition under which
-/// this SUT's detector is actually reliable.)
+/// Is the target held on screen? ("whole and large" — the condition under which this
+/// robot's detector is actually reliable.)
 ///
 /// * centred:  |u - width/2| <= center_tol_frac * width
 /// * large:    bbox height / image height >= min_height_ratio
 ///
-/// The "whole" half of AR-24 is bought by the STANDOFF DISTANCE, which was measured
+/// The "whole" half is bought by the STANDOFF DISTANCE, which was measured
 /// against the real detector (see patrol_manager_node.cpp: the chair is read as `chair`
 /// at 0.79-0.87 between 1.7 and 3.2 m and as `bench` below ~1.3 m), not asserted here:
 /// a 1.73 m person and a 0.877 m chair fill the frame differently at the same distance,
@@ -99,6 +101,19 @@ inline bool screenConditionOk(
     return false;
   }
   return (size_y_px / image_height_px) >= min_height_ratio;
+}
+
+/// Does a reported class satisfy the mission? An empty `goal_class` means "any of the
+/// configured target classes"; a non-empty one narrows the mission to exactly that
+/// class (exact, case-sensitive string match — the detector emits COCO names verbatim).
+inline bool classMatches(
+  const std::string & class_id, const std::string & goal_class,
+  const std::vector<std::string> & configured)
+{
+  if (!goal_class.empty()) {
+    return class_id == goal_class;
+  }
+  return std::find(configured.begin(), configured.end(), class_id) != configured.end();
 }
 
 /// Flat [x0, y0, x1, y1, ...] -> waypoints. False (and `out` untouched) when the list is

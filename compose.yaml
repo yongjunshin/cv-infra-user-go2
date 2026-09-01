@@ -1,0 +1,115 @@
+# Go2 patrol app — the whole playground on one desktop, three containers:
+#
+#   sim    the world: Isaac Sim warehouse + the Go2 body + its locomotion policy
+#          (loaded read-only from robot_sw/models — the file belongs to the robot,
+#          the simulator merely executes it), publishing sensors over ROS 2.
+#   robot  the brain: nav2 + YOLO detector + patrol manager (the app under
+#          robot_sw/, built into one image).
+#   web    the controller a person opens in a browser (http://localhost:8000).
+#
+# Start order (each waits for nothing — the robot stack simply idles until the
+# sim's /clock appears):
+#
+#   docker compose up -d sim
+#   docker compose up -d robot
+#   docker compose up -d web
+#
+# Everything shares the HOST network AND the host IPC namespace. Host network:
+# ROS 2 discovery (DDS) is multicast-happy and per-container networks would need a
+# discovery server. Host IPC: Fast DDS on one host negotiates its SHARED-MEMORY
+# transport — with separate /dev/shm per container, discovery (UDP) succeeds so
+# `ros2 topic list` looks fine, but the DATA lands in shm segments the other
+# container cannot open (measured: /clock visible, `ros2 topic hz /clock` silent
+# for 8 hours). `ipc: host` makes the segments shared, and camera images get the
+# fast path for free.
+#
+# `.env` (gitignored) must exist first — see .env.example. It carries the Isaac Sim
+# EULA / privacy consents, which are yours to give, not this repo's.
+
+services:
+  sim:
+    # Isaac Sim 5.1.0, pinned by digest. Stock image — the world script is mounted,
+    # not baked, so editing sim/*.py|yaml + `docker compose restart sim` is the loop.
+    image: nvcr.io/nvidia/isaac-sim:5.1.0@sha256:f3563cb2ba0c18af0b2fb321360dcb73a917b899f879e3213623d6bee484fa54
+    container_name: go2-sim
+    network_mode: host
+    ipc: host
+    # The stock image runs as user isaac-sim (uid 1234), but freshly-created named
+    # volumes are root-owned — every cache/download write then fails (measured: the
+    # renderer refused to come up and asset downloads died with "Could not download
+    # local file"). Root keeps `docker compose up sim` working on a fresh clone with
+    # zero setup; this is a personal-desktop dev rig, not a shared host.
+    user: root
+    env_file:
+      # Optional here so `docker compose config` works before you write `.env` —
+      # but the sim script itself refuses to boot without ACCEPT_EULA, with a
+      # message telling you exactly what to do. See .env.example.
+      - path: .env
+        required: false
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: all
+      # The world script's progress prints are the only view into a headless sim;
+      # without this they sit in python's block buffer and `docker logs` shows none.
+      PYTHONUNBUFFERED: "1"
+      # ROS_DISTRO deliberately NOT set: setup_ros_env.sh wires the image's bundled
+      # ROS 2 Jazzy libs only when ROS_DISTRO is unset.
+    # Kit's interprocess buffers need real shared memory; the 64 MB default starves it.
+    shm_size: "8gb"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ./sim:/workspace/sim:ro
+      # The locomotion policy + its meta live with the ROBOT (ownership), and are
+      # only mounted into the sim for execution (read-only on purpose).
+      - ./robot_sw/models:/robot_models:ro
+      # Warm caches: shaders, cloud-asset downloads, compute cache. First boot fills
+      # them (minutes); every boot after is ~25 s.
+      - isaac-kit-cache:/isaac-sim/kit/cache
+      - isaac-ov-cache:/isaac-sim/.cache
+      - isaac-compute-cache:/isaac-sim/.nv/ComputeCache
+      - isaac-ov-data:/isaac-sim/.local/share/ov/data
+      - isaac-documents:/isaac-sim/Documents
+      - isaac-logs:/isaac-sim/.nvidia-omniverse/logs
+    # The stock image's ENTRYPOINT is /isaac-sim/runheadless.sh (the native Kit app),
+    # which swallows any `command:` as its own args — override it or our script
+    # never runs (measured: the world script's banner never appeared).
+    entrypoint: []
+    command: >
+      bash -c "source setup_ros_env.sh &&
+               ./python.sh /workspace/sim/patrol_world.py
+                 --world /workspace/sim/world.yaml
+                 --policy /robot_models/locomotion/policy.pt"
+
+  robot:
+    build: ./robot_sw
+    image: go2-app:local
+    container_name: go2-robot
+    network_mode: host
+    ipc: host
+    # No GPU: perception runs on CPU by design (YOLO11n at ~5 Hz is plenty for a
+    # patrol), and the walking model runs inside the sim's physics loop.
+    # Default CMD = the patrol launch with use_sim_time — see robot_sw/Dockerfile.
+
+  web:
+    build:
+      # Repo-root context: the web image copies web/static, the go2_msgs interface
+      # package (so rosbridge can speak /patrol), and the robot's map image.
+      context: .
+      dockerfile: web/Dockerfile
+    image: go2-web:local
+    container_name: go2-web
+    network_mode: host
+    ipc: host
+
+volumes:
+  isaac-kit-cache:
+  isaac-ov-cache:
+  isaac-compute-cache:
+  isaac-ov-data:
+  isaac-documents:
+  isaac-logs:

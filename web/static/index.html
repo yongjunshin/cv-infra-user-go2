@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>로봇 조종실</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <h1 class="topbar__title">로봇 조종실</h1>
+  <div id="conn" class="conn is-off">
+    <span class="conn__dot"></span>
+    <span id="conn-text" class="conn__text">연결 안 됨</span>
+  </div>
+</header>
+
+<p id="banner" class="banner" hidden>로봇에 연결할 수 없어요 — 로봇 앱이 켜져 있는지 확인해 주세요</p>
+
+<main class="layout">
+
+  <!-- ─────────────────────────── LEFT ─────────────────────────── -->
+  <section class="panel">
+    <h2 class="panel__title">제어판</h2>
+
+    <div class="card">
+      <h3 class="card__title">수동 조작</h3>
+
+      <div class="dpad">
+        <button class="key key--up"    data-drive="forward" type="button"><span class="key__arrow">▲</span><span class="key__label">전진</span></button>
+        <button class="key key--left"  data-drive="left"    type="button"><span class="key__arrow">◀</span><span class="key__label">왼쪽 회전</span></button>
+        <div class="dpad__hub" aria-hidden="true"></div>
+        <button class="key key--right" data-drive="right"   type="button"><span class="key__arrow">▶</span><span class="key__label">오른쪽 회전</span></button>
+        <button class="key key--down"  data-drive="back"    type="button"><span class="key__arrow">▼</span><span class="key__label">후진</span></button>
+      </div>
+
+      <p class="note">로봇은 천천히 걷지 못해요 — 버튼을 누르는 동안 일정한 속도로 움직입니다.</p>
+      <p class="note note--dim">키보드 <b>W</b> <b>A</b> <b>S</b> <b>D</b> 로도 움직일 수 있어요.</p>
+    </div>
+
+    <div class="card">
+      <h3 class="card__title">순찰</h3>
+
+      <p class="ask">무엇을 찾을까요?</p>
+      <div class="chips" role="group" aria-label="찾을 대상">
+        <button class="chip is-on" data-target="chair"  type="button">의자</button>
+        <button class="chip"       data-target="person" type="button">사람</button>
+      </div>
+
+      <div class="actions">
+        <button id="patrol-start" class="btn btn--go"   type="button">순찰 시작</button>
+        <button id="patrol-stop"  class="btn btn--stop" type="button" disabled>중지</button>
+      </div>
+
+      <p id="patrol-status" class="status">아직 순찰을 시작하지 않았어요.</p>
+      <p id="patrol-detail" class="status__detail" hidden></p>
+    </div>
+  </section>
+
+  <!-- ─────────────────────────── RIGHT ─────────────────────────── -->
+  <section class="panel">
+    <h2 class="panel__title">로봇의 눈</h2>
+
+    <div class="tabs" role="tablist">
+      <button class="tab is-on" data-tab="camera" type="button" role="tab">카메라</button>
+      <button class="tab"       data-tab="map"    type="button" role="tab">지도</button>
+    </div>
+
+    <div id="view-camera" class="view">
+      <label class="switch">
+        <input type="checkbox" id="show-det">
+        <span>탐지 표시</span>
+      </label>
+      <div class="stage" id="cam-stage">
+        <!-- MJPEG straight from web_video_server; no decoding in the page. -->
+        <img id="cam" class="stage__img" alt="로봇 카메라 화면"
+             src="http://localhost:8080/stream?topic=/camera/image_raw&amp;type=mjpeg">
+        <canvas id="cam-overlay" class="stage__overlay"></canvas>
+        <p id="cam-msg" class="stage__msg" hidden>카메라 화면을 받아오지 못했어요 — 로봇 앱이 켜져 있는지 확인해 주세요.</p>
+      </div>
+    </div>
+
+    <div id="view-map" class="view" hidden>
+      <div class="stage stage--map" id="map-stage">
+        <canvas id="map-canvas" class="stage__overlay stage__overlay--map"></canvas>
+        <p id="map-msg" class="stage__msg" hidden>로봇이 어디에 있는지 아직 알 수 없어요.</p>
+      </div>
+      <p class="legend">
+        <span class="legend__key legend__key--robot"></span>로봇
+        <span class="legend__key legend__key--scan"></span>로봇이 지금 보고 있는 것
+        <span class="legend__key legend__key--wall"></span>벽
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<script src="roslib.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

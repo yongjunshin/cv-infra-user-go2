@@ -1,0 +1,53 @@
+# world.yaml — the world sim/patrol_world.py builds for the patrol app.
+#
+# READ ONCE, AT SIM BOOT. The harness parses this file before it opens the stage,
+# so editing it while the world is running changes nothing: edit, then restart
+# the harness.
+#
+# Available props (`asset:`), with their measured footprints:
+#   chair     0.60 x 0.60 x 0.88 m   — the patrol target the detector is tuned on
+#   desk      0.80 x 2.80 x 0.75 m   — nearly 3 m long, so it blocks an aisle
+#   forklift  1.21 x 3.50 x 2.16 m   — the big one
+#   person    1.77 x 0.44 x 1.73 m   — a static mannequin, see the note below
+#   box       1.20 x 0.40 x 0.15 m   — the built-in generic obstacle
+#
+# `z` IS NOT AN INPUT and never will be: each asset carries a measured offset
+# that puts its lowest geometry exactly on the floor, and the harness applies it.
+# A prop floating 5 cm above the ground reads as present and behaves as absent.
+#
+# `yaw` is in radians, counter-clockwise, and is optional (default 0.0).
+# Everything spawned here lands under /World/props in the stage.
+
+spawn:
+  # Where the robot is dropped. Drop HEIGHT is the harness's (0.32 m, measured):
+  # only the planar pose belongs here.
+  #
+  # ⚠ PAIRED WITH THE APP'S AMCL PRIOR — change both together.
+  # robot_sw/src/go2_bringup/params/nav2_params.yaml sets `amcl.initial_pose`,
+  # and that value is NOT a copy of this one: it is where the robot actually
+  # STANDS once the world is up. Activating the locomotion policy walks the body
+  # ~0.97 m along its own heading before it settles (measured live: declared
+  # (-6.0, -1.0) yaw pi/2 -> settled (-6.051, -0.032) yaw 1.564), and that
+  # happens before AMCL is even running, so AMCL never sees the motion. Move the
+  # spawn and the prior has to be re-derived from the new settled pose.
+  x: -6.0
+  y: -1.0
+  yaw: 1.5708  # pi/2 — facing +Y, i.e. up the patrol lane
+
+props:
+  - asset: chair
+    x: -6.0
+    y: 5.2
+    yaw: -1.5708  # front faces the approaching robot
+
+  - asset: person
+    x: -3.0
+    y: 7.0
+    yaw: 3.1416
+    # ⚠ This asset spawns in BIND POSE (arms straight out), so it is 1.76 m WIDE
+    # — budget a mannequin's wingspan here, not a person's shoulders. Placed off
+    # the patrol lane for exactly that reason; in a 2 m aisle it is a wall.
+
+  - asset: box
+    x: -3.0
+    y: 1.5
