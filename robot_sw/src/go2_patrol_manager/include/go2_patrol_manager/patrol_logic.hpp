@@ -144,6 +144,79 @@ inline double travelYaw(double from_x, double from_y, const Waypoint & to, doubl
   return bearing(from_x, from_y, to.x, to.y);
 }
 
+/// Signed shortest rotation that takes heading `from` onto heading `to`, in (-pi, pi].
+inline double shortestAngle(double from, double to)
+{
+  double d = std::fmod(to - from, 2.0 * M_PI);
+  if (d > M_PI) {
+    d -= 2.0 * M_PI;
+  } else if (d <= -M_PI) {
+    d += 2.0 * M_PI;
+  }
+  return d;
+}
+
+struct BounceChoice
+{
+  bool found{false};
+  double heading_rad{0.0};  // relative to the scan's own zero (= robot forward)
+};
+
+/// The bounce-search direction picker: given one 360-degree scan, choose a new heading
+/// that is (a) WALKABLE — every ray in a +-`window_halfwidth`-ray window around it
+/// reports at least `clear_m` of free range (one free ray between two shelves is a gap,
+/// not a corridor), and (b) NOT BACKTRACKING — headings within `reverse_exclude_rad` of
+/// straight-behind are excluded, so the robot explores instead of ping-ponging over the
+/// ground it just covered. Among the surviving candidates the choice is uniform via
+/// `u01` in [0, 1) — randomness is an INPUT here so this stays a pure, assertable
+/// function; the caller owns the RNG.
+///
+/// Range semantics follow sensor_msgs/LaserScan as this sim emits it: +inf = no return
+/// = open space (clear); NaN = invalid = treated as blocked (conservative). The window
+/// wraps, which is only correct for a full-circle scan — this robot's lidar is 360 deg.
+///
+/// `found == false` means the robot is boxed in: NO non-reverse heading has `clear_m`
+/// of room. The caller should stop and say so rather than pick a wall to walk into.
+inline BounceChoice pickBounceHeading(
+  const std::vector<float> & ranges, double angle_min, double angle_increment,
+  double clear_m, double reverse_exclude_rad, int window_halfwidth, double u01)
+{
+  const std::size_t n = ranges.size();
+  if (n == 0U || angle_increment <= 0.0) {
+    return BounceChoice{};
+  }
+  std::vector<bool> clear(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    const float r = ranges[i];
+    clear[i] = std::isinf(r) ? (r > 0.0f) : (std::isfinite(r) && r >= clear_m);
+  }
+  std::vector<std::size_t> candidates;
+  for (std::size_t i = 0; i < n; ++i) {
+    const double heading = angle_min + static_cast<double>(i) * angle_increment;
+    if (std::fabs(heading) > M_PI - reverse_exclude_rad) {
+      continue;  // straight-behind sector: where the robot just came from
+    }
+    bool walkable = true;
+    for (int k = -window_halfwidth; k <= window_halfwidth; ++k) {
+      const std::size_t j = (i + n + static_cast<std::size_t>(k + static_cast<int>(n))) % n;
+      if (!clear[j]) {
+        walkable = false;
+        break;
+      }
+    }
+    if (walkable) {
+      candidates.push_back(i);
+    }
+  }
+  if (candidates.empty()) {
+    return BounceChoice{};
+  }
+  const double clamped = std::min(std::max(u01, 0.0), 0.999999);
+  const std::size_t pick =
+    candidates[static_cast<std::size_t>(clamped * static_cast<double>(candidates.size()))];
+  return BounceChoice{true, angle_min + static_cast<double>(pick) * angle_increment};
+}
+
 }  // namespace go2_patrol_manager
 
 #endif  // GO2_PATROL_MANAGER__PATROL_LOGIC_HPP_

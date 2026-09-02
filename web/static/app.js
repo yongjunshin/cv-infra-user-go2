@@ -34,6 +34,12 @@
 
 var ROSBRIDGE_URL = 'ws://localhost:9090';
 var RECONNECT_MS  = 2000;
+/* If the robot app or the bridge is restarted, the browser's socket can go half-open:
+ * no 'close' event fires (so nothing reconnects), while the separate MJPEG camera keeps
+ * streaming. The map would then freeze at the last pose — looking like the robot is
+ * somewhere it is not. /tf arrives continuously (odom->base_link at 30 Hz), so its
+ * silence is a reliable liveness signal: this long without one, force a reconnect. */
+var TF_STALE_MS   = 4000;
 
 var TELEOP_TOPIC  = '/cmd_vel_teleop';
 var PATROL_ACTION = '/patrol';
@@ -96,15 +102,21 @@ var reconnectTimer = null;
 var cmdVel = null;                       /* ROSLIB.Topic, advertised once per connection */
 var detSub = null, scanSub = null, tfSub = null;
 
-var driveKey = null, driveTimer = null;
+var activeKeys = {}, driveTimer = null;  /* every currently-held drive key, composed */
 
 var target = 'chair';
-var patrolId = null;                     /* non-null == a goal is in flight */
+var patrolId = null;                     /* non-null == a goal THIS page started */
 var patrolTarget = null;
+/* A mission started by SOMEONE ELSE (e.g. this page before a reload). We cannot receive
+ * its action feedback/result — we never held its goal id — but the latched /patrol_state
+ * topic tells us it is running, and /patrol_cancel lets us stop it anyway. */
+var recoveredMission = false;
+var statePub = null, stateSub = null;
 
 var detections = [], lastDetAt = 0;
 var latestScan = null;
 var tfMapOdom = null, tfOdomBase = null;
+var lastTfMs = 0;                        /* liveness: when the last /tf arrived */
 
 var activeTab = 'camera';
 
@@ -131,6 +143,7 @@ function connect() {
 
 function onConnected() {
   connected = true;
+  lastTfMs = Date.now();               /* grace period before the liveness watchdog arms */
   connBox.className = 'conn is-on';
   connText.textContent = '연결됨';
   banner.hidden = true;
@@ -155,6 +168,17 @@ function onConnected() {
   });
   tfSub.subscribe(onTf);
 
+  /* Mission-state recovery: the manager latches its current state here (transient_local),
+   * so a page that connects mid-mission learns a patrol is running and can stop it. */
+  stateSub = new ROSLIB.Topic({
+    ros: ros, name: '/patrol_state', messageType: 'std_msgs/msg/String'
+  });
+  stateSub.subscribe(onPatrolState);
+  statePub = new ROSLIB.Topic({
+    ros: ros, name: '/patrol_cancel', messageType: 'std_msgs/msg/Empty'
+  });
+  statePub.advertise();
+
   syncDetectionSub();
   refreshPatrolButtons();
 }
@@ -170,6 +194,7 @@ function onDisconnected() {
   banner.hidden = false;
 
   cmdVel = null; detSub = null; scanSub = null; tfSub = null;
+  statePub = null; stateSub = null; recoveredMission = false;
   latestScan = null; tfMapOdom = null; tfOdomBase = null;
   detections = [];
 
@@ -229,28 +254,50 @@ function twist(lx, az) {
   });
 }
 
-function startDrive(key) {
-  if (!DRIVE[key] || driveKey === key || !connected) { return; }
-  stopDrive();
-  driveKey = key;
+/* Any number of keys can be held at once: the published Twist is their SUM, so
+ * forward+right = drive-and-arc, and forward+back (or left+right) simply cancels on that
+ * axis. The robot can do this — the patrol manager's own bounce turn drives x and z
+ * together — the buttons just deliberately expose no sideways (linear.y) or sub-dead-zone
+ * speed, because this locomotion policy cannot walk those. */
+function pressKey(key) {
+  if (!DRIVE[key] || activeKeys[key] || !connected) { return; }
+  activeKeys[key] = true;
   markKey(key, true);
-  publishDrive();                                   /* now, not 100 ms from now */
-  driveTimer = setInterval(publishDrive, 1000 / TELEOP_HZ);
+  if (!driveTimer) {
+    driveTimer = setInterval(publishDrive, 1000 / TELEOP_HZ);
+  }
+  publishDrive();                                   /* reflect the new combo now */
+}
+
+function releaseKey(key) {
+  if (!activeKeys[key]) { return; }
+  delete activeKeys[key];
+  markKey(key, false);
+  if (Object.keys(activeKeys).length === 0) {
+    stopDrive();
+  } else {
+    publishDrive();                                 /* publish the reduced combo at once */
+  }
 }
 
 function publishDrive() {
-  if (!cmdVel || !driveKey) { return; }
-  var v = DRIVE[driveKey];
-  cmdVel.publish(twist(v[0], v[1]));
+  if (!cmdVel) { return; }
+  var lx = 0, az = 0;
+  for (var k in activeKeys) {
+    if (activeKeys[k]) { lx += DRIVE[k][0]; az += DRIVE[k][1]; }
+  }
+  cmdVel.publish(twist(lx, az));
 }
 
+/* Release everything and stand still. Used on a key/button release that empties the set,
+ * and on disconnect / focus loss so the robot never runs on after the operator lets go. */
 function stopDrive() {
-  if (!driveKey) { return; }
+  var wasDriving = !!driveTimer || Object.keys(activeKeys).length > 0;
   clearInterval(driveTimer);
   driveTimer = null;
-  markKey(driveKey, false);
-  driveKey = null;
-  if (cmdVel) { cmdVel.publish(twist(0, 0)); }      /* exactly one zero on release */
+  for (var k in activeKeys) { markKey(k, false); }
+  activeKeys = {};
+  if (wasDriving && cmdVel) { cmdVel.publish(twist(0, 0)); }   /* exactly one zero */
 }
 
 function markKey(key, on) {
@@ -262,12 +309,10 @@ Array.prototype.forEach.call(document.querySelectorAll('[data-drive]'), function
   var key = btn.getAttribute('data-drive');
   btn.addEventListener('pointerdown', function (e) {
     e.preventDefault();
-    startDrive(key);
+    pressKey(key);
   });
   ['pointerup', 'pointercancel', 'pointerleave'].forEach(function (ev) {
-    btn.addEventListener(ev, function () {
-      if (driveKey === key) { stopDrive(); }
-    });
+    btn.addEventListener(ev, function () { releaseKey(key); });
   });
   btn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 });
@@ -279,12 +324,12 @@ window.addEventListener('keydown', function (e) {
   var key = WASD[e.code];
   if (!key) { return; }
   e.preventDefault();
-  startDrive(key);
+  pressKey(key);
 });
 
 window.addEventListener('keyup', function (e) {
   var key = WASD[e.code];
-  if (key && driveKey === key) { stopDrive(); }
+  if (key) { releaseKey(key); }
 });
 
 /* Losing focus (alt-tab, minimise) never delivers a keyup — stop instead of running on. */
@@ -297,7 +342,7 @@ document.addEventListener('visibilitychange', function () {
 
 Array.prototype.forEach.call(document.querySelectorAll('[data-target]'), function (chip) {
   chip.addEventListener('click', function () {
-    if (patrolId) { return; }                        /* not mid-mission */
+    if (patrolId || recoveredMission) { return; }    /* not mid-mission */
     target = chip.getAttribute('data-target');
     Array.prototype.forEach.call(document.querySelectorAll('[data-target]'), function (c) {
       c.classList.toggle('is-on', c === chip);
@@ -326,10 +371,49 @@ patrolStart.addEventListener('click', function () {
 });
 
 patrolStop.addEventListener('click', function () {
-  if (!patrolId) { return; }
-  ros.callOnConnection({ op: 'cancel_action_goal', id: patrolId, action: PATROL_ACTION });
-  setStatus('순찰을 중지하는 중이에요…', 'is-busy');
+  if (patrolId) {
+    /* our own mission — cancel by the goal id we hold */
+    ros.callOnConnection({ op: 'cancel_action_goal', id: patrolId, action: PATROL_ACTION });
+    setStatus('순찰을 중지하는 중이에요…', 'is-busy');
+  } else if (recoveredMission && statePub) {
+    /* a mission we did not start (pre-reload) — stop it by name, no goal id needed */
+    statePub.publish(new ROSLIB.Message({}));
+    setStatus('순찰을 중지하는 중이에요…', 'is-busy');
+  }
 });
+
+/* The manager's latched state. Either confirms our own mission, or reveals one this page
+ * did not start (a reload) so the UI can show it and offer 중지. Format: "STATE [class]". */
+function onPatrolState(m) {
+  var parts = String(m.data || 'IDLE').split(' ');
+  var state = parts[0];
+
+  if (state === 'IDLE') {
+    /* Only act on IDLE for a RECOVERED mission — our own missions end through the action
+     * result path, which owns the outcome message. */
+    if (recoveredMission) {
+      recoveredMission = false;
+      setStatus('순찰이 끝났어요.', '');
+      statusDetail.hidden = true;
+      refreshPatrolButtons();
+    }
+    return;
+  }
+
+  if (patrolId) { return; }             /* our own mission — feedback path drives the UI */
+
+  /* A mission is running that this page did not start. Adopt it for display + control. */
+  recoveredMission = true;
+  if (parts[1]) {
+    patrolTarget = parts[1];
+    var chips = document.querySelectorAll('[data-target]');
+    Array.prototype.forEach.call(chips, function (c) {
+      c.classList.toggle('is-on', c.getAttribute('data-target') === patrolTarget);
+    });
+  }
+  setStatus(STATE_KO[state] || '순찰 중이에요', 'is-busy');
+  refreshPatrolButtons();
+}
 
 function onPatrolFeedback(values) {
   if (!values) { return; }
@@ -345,8 +429,16 @@ function onPatrolResult(msg) {
   /* result:false == rosbridge could not even run the goal (no such action server, bad
    * type, rejected goal). `values` is the exception text, not a Patrol result. */
   if (msg.result === false) {
-    setStatus('순찰을 마치지 못했어요:', 'is-sad');
-    showDetail(typeof msg.values === 'string' ? msg.values : '');
+    var err = typeof msg.values === 'string' ? msg.values : '';
+    /* A rejected goal is not a failed patrol — the robot is simply busy with one already
+     * (or still standing up). Say so gently and let the operator retry. */
+    if (/reject/i.test(err) || /already/i.test(err)) {
+      setStatus('지금은 시작할 수 없어요 — 이미 순찰 중이에요. 잠시 후 다시 눌러 주세요.', 'is-sad');
+      statusDetail.hidden = true;
+    } else {
+      setStatus('순찰을 시작하지 못했어요:', 'is-sad');
+      showDetail(err);
+    }
     return;
   }
 
@@ -379,9 +471,9 @@ function showDetail(text) {
 }
 
 function refreshPatrolButtons() {
-  var running = !!patrolId;
+  var running = !!patrolId || recoveredMission;
   patrolStart.disabled = running || !connected;
-  patrolStop.disabled = !running;
+  patrolStop.disabled = !running || !connected;
   Array.prototype.forEach.call(document.querySelectorAll('[data-target]'), function (c) {
     c.disabled = running;
   });
@@ -512,6 +604,7 @@ function yawOf(q) {
 }
 
 function onTf(m) {
+  lastTfMs = Date.now();               /* liveness heartbeat for the watchdog */
   var list = m.transforms || [];
   for (var i = 0; i < list.length; i++) {
     var t = list[i];
@@ -555,8 +648,15 @@ function drawMapView() {
   var ox = (c.w - MAP_W * s) / 2, oy = (c.h - MAP_H * s) / 2;
   ctx.drawImage(mapImage, ox, oy, MAP_W * s, MAP_H * s);
 
-  var pose = robotPose();
-  mapMsg.hidden = !!pose || !connected;
+  /* A stale /tf means the map data has stopped; never draw the robot at a frozen pose,
+   * which reads as "the robot is over there" when it is not. The watchdog is reconnecting;
+   * say so instead of drawing a lie. */
+  var stale = connected && lastTfMs && (Date.now() - lastTfMs > TF_STALE_MS);
+  var pose = stale ? null : robotPose();
+  mapMsg.textContent = stale
+    ? '지도 신호가 끊겨 다시 연결하고 있어요…'
+    : '로봇이 어디에 있는지 아직 알 수 없어요.';
+  mapMsg.hidden = !!pose || (!connected && !stale);
   if (!pose) { return; }
 
   /* live lidar: polar in the lidar frame ≈ base_link (the mount is a pure +z offset),
@@ -613,6 +713,17 @@ setInterval(function () {
   if (activeTab === 'camera') { drawDetections(); }
   else                        { drawMapView(); }
 }, 1000 / DRAW_HZ);
+
+/* Liveness watchdog: a half-open socket never fires 'close', so if /tf has gone quiet
+ * while we still believe we are connected, tear the socket down. That fires 'close' ->
+ * onDisconnected -> the reconnect timer -> a fresh connect that re-advertises teleop and
+ * re-subscribes /scan+/tf — the same healthy state a manual page reload gives, with no
+ * reload. onDisconnected clears `connected`, so this fires once per stall, not in a loop. */
+setInterval(function () {
+  if (connected && lastTfMs && (Date.now() - lastTfMs > TF_STALE_MS)) {
+    try { if (ros) { ros.close(); } } catch (e) { /* fall through to onDisconnected */ }
+  }
+}, 1000);
 
 /* ══ go ════════════════════════════════════════════════════════════════════════════ */
 

@@ -40,15 +40,20 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
+#include <geometry_msgs/msg/twist.hpp>
 #include <go2_msgs/action/patrol.hpp>
 #include <nav2_msgs/action/navigate_to_pose.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
+#include <sensor_msgs/msg/laser_scan.hpp>
+#include <std_msgs/msg/empty.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <tf2/utils.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2_ros/buffer.hpp>
@@ -70,6 +75,7 @@ enum class State { IDLE, PROBE, SEARCHING, APPROACHING, HOLDING };
 enum class NavState { NONE, REQUESTED, PENDING, ACTIVE, SUCCEEDED, FAILED };
 //: Approach legs: line up on the robot-target line first, then walk straight in.
 enum class ApproachStage { LINEUP, FINAL };
+enum class SearchPhase { STRAIGHT, TURNING };  // bounce mode's two legs
 
 const char * stateName(State state)
 {
@@ -181,6 +187,18 @@ public:
     // How long to wait for ANY perception before aborting: a camera-less patrol is a
     // configuration error, not a degraded mission.
     perception_probe_s_ = declare_parameter<double>("perception_probe_s", 5.0);
+    // A whole approach (line-up + final, plus its bounded retries) that has not reached the
+    // hold by now was chasing a target that is no longer there — go back to searching. A
+    // real approach is ~10-20 s of sim time (measured); this leaves generous margin.
+    approach_timeout_s_ = declare_parameter<double>("approach_timeout_s", 45.0);
+    // After an approach gives up, the target is usually STILL on /targets, so searching
+    // would re-confirm it and re-approach the same unreachable spot forever while the robot
+    // stands still (MEASURED livelock: SEARCH->APPROACH->timeout->SEARCH every 45 s, the
+    // whole time inside nav2's dead-zone creep). So ignore a just-failed target for a
+    // cooldown: the bounce search then actually walks away and explores, and may re-find it
+    // from a reachable angle later.
+    retarget_cooldown_s_ = declare_parameter<double>("retarget_cooldown_s", 20.0);
+    retarget_cooldown_r_ = declare_parameter<double>("retarget_cooldown_r", 1.5);
     // A detection older than this is not evidence of what is on screen NOW (detector runs
     // at 5 Hz sim-time, so this is 5 missed frames).
     detection_stale_s_ = declare_parameter<double>("detection_stale_s", 1.0);
@@ -188,6 +206,58 @@ public:
     // whenever it likes. Set a value as a safety net for unattended runs.
     mission_timeout_s_ = declare_parameter<double>("mission_timeout_s", 0.0);
     tick_period_s_ = declare_parameter<double>("tick_period_s", 0.2);
+
+    // --- search strategy -------------------------------------------------------------
+    // "bounce" (default): walk straight until the scan says something is close ahead,
+    // then arc-turn onto a random clear heading (not the one we came from) and walk
+    // straight again — a coverage walk that needs no route. "route": the fixed
+    // `search_waypoints` patrol. Both hand over to the same APPROACHING the moment a
+    // class-matching target is confirmed.
+    search_mode_ = declare_parameter<std::string>("search_mode", "bounce");
+    if (search_mode_ != "bounce" && search_mode_ != "route") {
+      throw std::runtime_error("search_mode must be 'bounce' or 'route', got: " + search_mode_);
+    }
+    const auto scan_topic = declare_parameter<std::string>("scan_topic", "/scan");
+    // Published only while SEARCHING in bounce mode. twist_mux arbitrates it at priority
+    // 50 — above idle nav2 chatter (10), below a human (100). ⚠ In this phase the
+    // manager, not nav2, is the driver, so nav2's collision_monitor does NOT gate these
+    // commands: the pre-collision guarantee is `bounce_trigger_m` itself.
+    const auto cmd_vel_search_topic =
+      declare_parameter<std::string>("cmd_vel_search_topic", "cmd_vel_search");
+    // 0.4 m/s: comfortably above the policy's <0.2 m/s dead zone.
+    search_speed_m_s_ = declare_parameter<double>("search_speed_m_s", 0.4);
+    // Bounce when the forward window reports less than this. Budget: at 0.4 m/s the arc
+    // turn below has radius ~0.3 m (0.25 / 0.8), so 1.2 m leaves the whole maneuver in
+    // free space with ~2x margin.
+    bounce_trigger_m_ = declare_parameter<double>("bounce_trigger_m", 1.2);
+    // A candidate heading must have this much room to be worth walking into — more than
+    // the trigger, so a fresh leg does not begin already needing to bounce.
+    bounce_clear_m_ = declare_parameter<double>("bounce_clear_m", 1.5);
+    // The "ahead" window watched while walking straight: +-15 deg.
+    bounce_forward_halfwidth_rad_ =
+      declare_parameter<double>("bounce_forward_halfwidth_rad", 0.26);
+    // Headings within 45 deg of straight-behind are never chosen: that is the ground the
+    // robot just covered, and bouncing back onto it is how a random walk ping-pongs.
+    bounce_reverse_exclude_rad_ =
+      declare_parameter<double>("bounce_reverse_exclude_rad", 0.79);
+    // A candidate heading is a corridor, not a gap: every ray within +-this many beams
+    // must be clear (25 beams x 0.1125 deg/beam ~ +-2.8 deg... widened by the clear
+    // window in metres this maps to at bounce_clear_m).
+    bounce_window_halfwidth_ = declare_parameter<int>("bounce_window_halfwidth", 60);
+    // The turn is an ARC, never a pivot: this policy executes in-place yaw at ~6 % of
+    // the commanded rate but tracks it at ~91 % while walking. 0.25 m/s stays above the
+    // dead zone; 0.8 rad/s is the app's own wz ceiling.
+    bounce_turn_speed_m_s_ = declare_parameter<double>("bounce_turn_speed_m_s", 0.25);
+    bounce_turn_wz_ = declare_parameter<double>("bounce_turn_wz", 0.8);
+    bounce_heading_tol_rad_ = declare_parameter<double>("bounce_heading_tol_rad", 0.17);
+    // A random walk has no "route exhausted" — this is its honest end instead (sim
+    // seconds; ~3x the measured route-mode mission).
+    search_timeout_s_ = declare_parameter<double>("search_timeout_s", 180.0);
+    // 0 = seed from hardware entropy. Any other value makes the bounce sequence
+    // reproducible for debugging a specific wander.
+    const auto bounce_seed = declare_parameter<int>("bounce_seed", 0);
+    rng_.seed(
+      bounce_seed == 0 ? std::random_device{}() : static_cast<unsigned int>(bounce_seed));
 
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, this);
@@ -204,6 +274,23 @@ public:
         image_width_ = static_cast<double>(msg->width);
         image_height_ = static_cast<double>(msg->height);
       });
+    // The bounce search's eyes-forward: only the latest scan matters, so sensor QoS.
+    scan_sub_ = create_subscription<sensor_msgs::msg::LaserScan>(
+      scan_topic, rclcpp::SensorDataQoS(),
+      [this](sensor_msgs::msg::LaserScan::SharedPtr msg) { scan_ = std::move(msg); });
+    search_pub_ =
+      create_publisher<geometry_msgs::msg::Twist>(cmd_vel_search_topic, rclcpp::QoS(5));
+
+    // Latched (transient-local) so a client that subscribes AFTER the mission started still
+    // gets the current state as its first message — the whole point of state recovery.
+    state_pub_ = create_publisher<std_msgs::msg::String>(
+      "/patrol_state", rclcpp::QoS(1).transient_local());
+    // A goal-id-free stop: a reloaded UI has lost the action goal id it would need to
+    // cancel, so it needs a way to stop the running mission by name. Any message here
+    // stands the robot down.
+    cancel_sub_ = create_subscription<std_msgs::msg::Empty>(
+      "/patrol_cancel", rclcpp::QoS(1),
+      [this](std_msgs::msg::Empty::SharedPtr) { onExternalStop(); });
 
     nav_client_ = rclcpp_action::create_client<NavigateToPose>(this, nav2_action);
     action_server_ = rclcpp_action::create_server<Patrol>(
@@ -228,9 +315,13 @@ public:
     RCLCPP_INFO(
       get_logger(),
       "go2_patrol_manager up: serving %s, driving %s | standoff=%.2f m hold=%.1f s "
-      "(centre<=%.2f W, height>=%.2f H) route: %s",
+      "(centre<=%.2f W, height>=%.2f H) search=%s%s%s",
       patrol_action.c_str(), nav2_action.c_str(), standoff_m_, confirm_hold_s_,
-      hold_center_tol_frac_, hold_min_height_ratio_, route.c_str());
+      hold_center_tol_frac_, hold_min_height_ratio_, search_mode_.c_str(),
+      search_mode_ == "route" ? " route: " : "",
+      search_mode_ == "route" ? route.c_str() : "");
+
+    publishState();  // latch the initial IDLE so a UI connecting before any mission sees it
   }
 
 private:
@@ -264,6 +355,18 @@ private:
     return rclcpp_action::CancelResponse::ACCEPT;
   }
 
+  /// Operator stop from a client that does not hold the action goal id (a reloaded UI has
+  /// lost it). End the running mission and stand down; the latched state topic then tells
+  /// every connected UI it is over.
+  void onExternalStop()
+  {
+    if (state_ == State::IDLE) {
+      return;
+    }
+    RCLCPP_INFO(get_logger(), "external stop received — standing down");
+    finish(false, "stopped by the operator");
+  }
+
   void handleAccepted(const std::shared_ptr<ServerGoalHandle> handle)
   {
     goal_handle_ = handle;
@@ -278,6 +381,7 @@ private:
   void finish(bool success, const std::string & reason)
   {
     cancelNav();
+    stopSearchDrive();
     auto result = std::make_shared<Patrol::Result>();
     result->found = success;
     result->message = reason;  // every outcome, not just the failures, says why
@@ -466,6 +570,9 @@ private:
         continue;
       }
       const auto & p = hyp.pose.pose.position;
+      if (onCooldown(p.x, p.y)) {
+        continue;  // a target we just failed on — keep exploring, do not re-lock on it
+      }
       const double d = distance(robot.x, robot.y, p.x, p.y);
       if (d < best) {
         best = d;
@@ -484,6 +591,24 @@ private:
       RCLCPP_INFO(get_logger(), "%s -> %s (%s)", stateName(state_), stateName(next), why.c_str());
     }
     state_ = next;
+    publishState();
+  }
+
+  /// The mission state as a latched topic, so a UI that connects (or reconnects, or is
+  /// reloaded) mid-mission learns immediately that a patrol is running and for what —
+  /// the client that sent the goal is not the only thing that should know. Format:
+  /// "STATE" or "STATE class" (e.g. "SEARCHING person"); "IDLE" means no mission.
+  void publishState()
+  {
+    if (state_pub_ == nullptr) {
+      return;
+    }
+    std_msgs::msg::String msg;
+    msg.data = stateName(state_);
+    if (state_ != State::IDLE && !goal_class_.empty()) {
+      msg.data += " " + goal_class_;
+    }
+    state_pub_->publish(msg);
   }
 
   void publishFeedback(const Pose2 & robot)
@@ -554,9 +679,13 @@ private:
   {
     if (perceptionAlive()) {
       setState(State::SEARCHING, "perception is alive — patrolling");
-      if (have_pose) {
+      search_start_s_ = nowSeconds();
+      search_phase_ = SearchPhase::STRAIGHT;
+      bounce_count_ = 0;
+      if (search_mode_ == "route" && have_pose) {
         sendSearchGoal(robot);
       }
+      // bounce mode sends nothing here: it drives itself from the tick.
       return;
     }
     if ((nowSeconds() - probe_start_s_) < perception_probe_s_) {
@@ -585,6 +714,7 @@ private:
     double tz = 0.0;
     if (nearestTarget(robot, tx, ty, tz)) {
       cancelNav();
+      stopSearchDrive();  // bounce mode: hand the wheel back before nav2 takes it
       target_x_ = tx;
       target_y_ = ty;
       target_z_ = tz;
@@ -593,6 +723,19 @@ private:
         State::APPROACHING, "confirmed target at (" + std::to_string(tx) + ", " +
                               std::to_string(ty) + ")");
       beginApproach(robot, "approach");
+      return;
+    }
+    // The one not-found end of the mission, shared by both search modes: the whole-mission
+    // budget from the first time we started looking. Everything else (a lost target, an
+    // unreachable one, an exhausted route) sends the robot back out rather than home.
+    if ((nowSeconds() - search_start_s_) > search_timeout_s_) {
+      finish(
+        false, "search budget exhausted (" + std::to_string(search_timeout_s_) +
+                 " s) without confirming a target");
+      return;
+    }
+    if (search_mode_ == "bounce") {
+      tickSearchingBounce(robot);
       return;
     }
     if (nav_state_ == NavState::NONE) {
@@ -605,17 +748,127 @@ private:
       const bool failed = nav_state_ == NavState::FAILED;
       ++waypoint_index_;
       if (waypoint_index_ >= waypoints_.size()) {
-        finish(
-          false,
-          "patrol route exhausted without confirming a target (last waypoint " +
-            std::string(failed ? "failed" : "reached") + ")");
-        return;
-      }
-      if (failed) {
+        // Route done, still nothing — loop it. The budget check above is what ends the
+        // mission, so a patrol keeps walking its round until it finds the target or runs
+        // out of time, never after a single lap.
+        waypoint_index_ = 0;
+        RCLCPP_INFO(get_logger(), "route completed without a target — starting another lap");
+      } else if (failed) {
         RCLCPP_WARN(get_logger(), "nav2 could not reach that waypoint — moving to the next one");
       }
       sendSearchGoal(robot);
     }
+  }
+
+  /// The bounce search: straight until the scan says something is close ahead, then an
+  /// ARC turn onto a random clear non-backtracking heading, then straight again. The
+  /// choice itself is the pure `pickBounceHeading` (tested on CPU); this method only
+  /// owns timing, the RNG draw, and the Twist publishing.
+  void tickSearchingBounce(const Pose2 & robot)
+  {
+    // (The whole-mission search budget is checked in tickSearching, common to both modes.)
+    if (scan_ == nullptr) {
+      // No scan = no pre-collision guarantee = do not move. The mux releases /cmd_vel
+      // 0.5 s after our last message, so silence here IS the stop.
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 5000, "bounce search is waiting for %s — not moving",
+        scan_sub_->get_topic_name());
+      return;
+    }
+    const auto & scan = *scan_;
+    // Forward clearance: the nearest finite return within +-the forward window.
+    double fwd = std::numeric_limits<double>::infinity();
+    for (std::size_t i = 0; i < scan.ranges.size(); ++i) {
+      const double a = scan.angle_min + static_cast<double>(i) * scan.angle_increment;
+      if (std::fabs(a) > bounce_forward_halfwidth_rad_) {
+        continue;
+      }
+      const float r = scan.ranges[i];
+      if (std::isfinite(r) && static_cast<double>(r) < fwd) {
+        fwd = static_cast<double>(r);
+      }
+    }
+    geometry_msgs::msg::Twist cmd;
+    if (search_phase_ == SearchPhase::TURNING) {
+      const double err = shortestAngle(robot.yaw, bounce_target_yaw_);
+      if (std::fabs(err) <= bounce_heading_tol_rad_) {
+        search_phase_ = SearchPhase::STRAIGHT;
+        RCLCPP_INFO(
+          get_logger(), "bounce %d complete — straight along yaw %.2f", bounce_count_,
+          bounce_target_yaw_);
+      } else {
+        cmd.linear.x = bounce_turn_speed_m_s_;
+        cmd.angular.z = std::copysign(bounce_turn_wz_, err);
+        search_pub_->publish(cmd);
+        return;
+      }
+    }
+    if (fwd < bounce_trigger_m_) {
+      const double u01 = std::uniform_real_distribution<double>(0.0, 1.0)(rng_);
+      const auto choice = pickBounceHeading(
+        scan.ranges, scan.angle_min, scan.angle_increment, bounce_clear_m_,
+        bounce_reverse_exclude_rad_, bounce_window_halfwidth_, u01);
+      if (!choice.found) {
+        finish(
+          false, "boxed in after " + std::to_string(bounce_count_) +
+                   " bounce(s): no non-backtracking heading has " +
+                   std::to_string(bounce_clear_m_) + " m of clearance");
+        return;
+      }
+      ++bounce_count_;
+      bounce_target_yaw_ = robot.yaw + choice.heading_rad;
+      search_phase_ = SearchPhase::TURNING;
+      RCLCPP_INFO(
+        get_logger(),
+        "bounce %d: %.2f m ahead < %.2f m trigger — arc-turning %.0f deg to yaw %.2f",
+        bounce_count_, fwd, bounce_trigger_m_, choice.heading_rad * 180.0 / M_PI,
+        bounce_target_yaw_);
+      cmd.linear.x = bounce_turn_speed_m_s_;
+      cmd.angular.z = std::copysign(bounce_turn_wz_, choice.heading_rad);
+      search_pub_->publish(cmd);
+      return;
+    }
+    cmd.linear.x = search_speed_m_s_;
+    search_pub_->publish(cmd);
+  }
+
+  /// One zero Twist, so the robot is not left coasting on the last search command while
+  /// the mux's 0.5 s timeout runs down. Harmless when the search never drove.
+  void stopSearchDrive()
+  {
+    if (search_pub_ != nullptr) {
+      search_pub_->publish(geometry_msgs::msg::Twist{});
+    }
+    search_phase_ = SearchPhase::STRAIGHT;
+  }
+
+  /// A patrol does not give up because one target could not be reached or held — it goes
+  /// back to looking. The ONLY not-found end of the mission is the whole-mission search
+  /// budget (checked in tickSearching); a single lost, unreachable, or un-holdable target
+  /// just sends the robot back out. `search_start_s_` is deliberately NOT reset here, so
+  /// the budget spans the whole mission across any number of find/lose cycles.
+  void resumeSearch(const std::string & why)
+  {
+    cancelNav();
+    stopSearchDrive();
+    // Remember the target we just could not reach/hold, so the search does not instantly
+    // re-lock on it (see retarget_cooldown_s_). This is what turns "resume search" into an
+    // actual walk away rather than a standing-still livelock.
+    failed_target_x_ = target_x_;
+    failed_target_y_ = target_y_;
+    failed_target_s_ = nowSeconds();
+    waypoint_index_ = 0;  // restart the route (route mode); a no-op walk state in bounce mode
+    approach_retries_ = 0;
+    RCLCPP_WARN(get_logger(), "%s — resuming the search", why.c_str());
+    setState(State::SEARCHING, why + " — resuming search");
+  }
+
+  /// A confirmed target we just failed on, still inside its cooldown window? Then the
+  /// search must ignore it and keep exploring instead of re-locking on the spot.
+  bool onCooldown(double x, double y) const
+  {
+    return (nowSeconds() - failed_target_s_) < retarget_cooldown_s_ &&
+           distance(x, y, failed_target_x_, failed_target_y_) <= retarget_cooldown_r_;
   }
 
   /// Start (or restart) the approach: line up first, then walk the last stretch straight.
@@ -634,6 +887,7 @@ private:
   /// rotation, no creep — the two things this locomotion policy will not execute.
   void beginApproach(const Pose2 & robot, const char * why)
   {
+    approach_start_s_ = nowSeconds();  // bounds this approach; a stuck one goes back to search
     const double range = distance(robot.x, robot.y, target_x_, target_y_);
     // The line-up point sits on the target->robot ray at lineup_m, so the line-up LEG
     // the robot must walk is only (range - lineup_m). A robot hovering just outside the
@@ -660,6 +914,15 @@ private:
 
   void tickApproaching(const Pose2 & robot, bool have_pose)
   {
+    // An approach that never converges must not hang the mission: nav2 can stay ACTIVE
+    // indefinitely replanning toward a ghost target (one that was confirmed, then lost) and
+    // then neither the ring, nor SUCCEEDED, nor FAILED ever fires. Bound it — a stale
+    // approach goes back to searching (MEASURED: a lost-target approach hung in APPROACHING
+    // and rejected every new goal until the node was restarted).
+    if ((nowSeconds() - approach_start_s_) > approach_timeout_s_) {
+      resumeSearch("approach did not converge in time");
+      return;
+    }
     // The target ESTIMATE improves while we walk toward it — it is a projection through
     // AMCL's map->odom, and the filter converges as the robot moves (measured live: a
     // static chair's estimate travelled 1.5 m during the first approach). Re-aim on the
@@ -729,7 +992,7 @@ private:
     }
     if (nav_state_ == NavState::FAILED) {
       if (approach_retries_ >= max_approach_retries_) {
-        finish(false, "nav2 could not reach the approach pose after retries");
+        resumeSearch("could not reach the target after retries");
         return;
       }
       ++approach_retries_;
@@ -766,7 +1029,7 @@ private:
     }
     if ((now_s - hold_enter_s_) > hold_timeout_s_) {
       if (approach_retries_ >= max_approach_retries_) {
-        finish(false, "target never met the on-screen hold condition at the standoff pose");
+        resumeSearch("could not hold the target on screen");
         return;
       }
       ++approach_retries_;
@@ -805,9 +1068,33 @@ private:
   double retarget_min_period_s_{1.0};
   double last_retarget_s_{-1e9};
   double perception_probe_s_{5.0};
+  double approach_timeout_s_{45.0};
+  double approach_start_s_{0.0};
+  double retarget_cooldown_s_{20.0};
+  double retarget_cooldown_r_{1.5};
+  double failed_target_x_{0.0};
+  double failed_target_y_{0.0};
+  double failed_target_s_{-1e9};
   double detection_stale_s_{1.0};
   double mission_timeout_s_{0.0};
   double tick_period_s_{0.2};
+
+  std::string search_mode_{"bounce"};
+  double search_speed_m_s_{0.4};
+  double bounce_trigger_m_{1.2};
+  double bounce_clear_m_{1.5};
+  double bounce_forward_halfwidth_rad_{0.26};
+  double bounce_reverse_exclude_rad_{0.79};
+  int bounce_window_halfwidth_{60};
+  double bounce_turn_speed_m_s_{0.25};
+  double bounce_turn_wz_{0.8};
+  double bounce_heading_tol_rad_{0.17};
+  double search_timeout_s_{180.0};
+  double search_start_s_{0.0};
+  double bounce_target_yaw_{0.0};
+  int bounce_count_{0};
+  SearchPhase search_phase_{SearchPhase::STRAIGHT};
+  std::mt19937 rng_;
 
   State state_{State::IDLE};
   ApproachStage approach_stage_{ApproachStage::LINEUP};
@@ -834,12 +1121,17 @@ private:
   double image_height_{0.0};
 
   vision_msgs::msg::Detection3DArray::SharedPtr targets_;
+  sensor_msgs::msg::LaserScan::SharedPtr scan_;
 
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   rclcpp::Subscription<vision_msgs::msg::Detection3DArray>::SharedPtr targets_sub_;
   rclcpp::Subscription<vision_msgs::msg::Detection2DArray>::SharedPtr detections_sub_;
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr info_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
+  rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr search_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
+  rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr cancel_sub_;
   rclcpp_action::Client<NavigateToPose>::SharedPtr nav_client_;
   ClientGoalHandle::SharedPtr nav_goal_handle_;
   rclcpp_action::Server<Patrol>::SharedPtr action_server_;

@@ -18,6 +18,8 @@ using go2_patrol_manager::bearing;
 using go2_patrol_manager::classMatches;
 using go2_patrol_manager::distance;
 using go2_patrol_manager::parseWaypoints;
+using go2_patrol_manager::pickBounceHeading;
+using go2_patrol_manager::shortestAngle;
 using go2_patrol_manager::Pose2;
 using go2_patrol_manager::screenConditionOk;
 using go2_patrol_manager::standoffPose;
@@ -158,4 +160,70 @@ TEST(TravelYaw, KeepsTheCurrentHeadingWhenAlreadyThere)
 {
   // Never synthesise a heading that would have to be reached by turning on the spot.
   EXPECT_NEAR(travelYaw(-6.0, 1.2, Waypoint{-6.0, 1.2}, 1.5708), 1.5708, 1e-12);
+}
+
+// ---------------------------------------------------------------------------
+// The bounce search's direction picker. A 360-ray synthetic scan (1 deg/beam,
+// angle_min = -pi) stands in for the real 3200-beam lidar: same convention,
+// cheap to reason about. Window halfwidth 5 rays = a +-5 deg corridor check.
+
+namespace
+{
+std::vector<float> uniformScan(float range_m)
+{
+  return std::vector<float>(360, range_m);
+}
+constexpr double kInc = M_PI / 180.0;
+constexpr double kMin = -M_PI;
+}  // namespace
+
+TEST(PickBounceHeading, BlockedSectorsAreExcluded)
+{
+  // Everything is a wall at 0.5 m except a 40-deg corridor around +90 deg.
+  auto ranges = uniformScan(0.5F);
+  for (int deg = 250; deg < 290; ++deg) {  // index = deg means angle = deg - 180
+    ranges[static_cast<std::size_t>(deg)] = 5.0F;
+  }
+  for (double u : {0.0, 0.5, 0.999}) {
+    const auto c = pickBounceHeading(ranges, kMin, kInc, 1.5, 0.79, 5, u);
+    ASSERT_TRUE(c.found);
+    // Any admissible pick lies inside the corridor (minus the window shrink).
+    EXPECT_GT(c.heading_rad, (250 - 180 + 4) * kInc);
+    EXPECT_LT(c.heading_rad, (290 - 180 - 4) * kInc);
+  }
+}
+
+TEST(PickBounceHeading, ReverseSectorIsExcludedEvenWhenClear)
+{
+  // The whole world is open — but straight-behind is where we just came from.
+  const auto ranges = uniformScan(10.0F);
+  for (double u : {0.0, 0.25, 0.5, 0.75, 0.999}) {
+    const auto c = pickBounceHeading(ranges, kMin, kInc, 1.5, 0.79, 5, u);
+    ASSERT_TRUE(c.found);
+    EXPECT_LE(std::fabs(c.heading_rad), M_PI - 0.79 + 1e-9);
+  }
+}
+
+TEST(PickBounceHeading, DeterministicGivenTheSameDraw)
+{
+  const auto ranges = uniformScan(10.0F);
+  const auto a = pickBounceHeading(ranges, kMin, kInc, 1.5, 0.79, 5, 0.42);
+  const auto b = pickBounceHeading(ranges, kMin, kInc, 1.5, 0.79, 5, 0.42);
+  ASSERT_TRUE(a.found);
+  EXPECT_NEAR(a.heading_rad, b.heading_rad, 1e-12);  // the RNG is an input, not hidden state
+}
+
+TEST(PickBounceHeading, BoxedInReturnsNotFound)
+{
+  // Nothing has 1.5 m of room: the caller must stop and say so, not pick a wall.
+  const auto ranges = uniformScan(0.8F);
+  const auto c = pickBounceHeading(ranges, kMin, kInc, 1.5, 0.79, 5, 0.5);
+  EXPECT_FALSE(c.found);
+}
+
+TEST(ShortestAngle, WrapsBothWays)
+{
+  EXPECT_NEAR(shortestAngle(3.0, -3.0), 2.0 * M_PI - 6.0, 1e-9);   // cross +pi going CCW
+  EXPECT_NEAR(shortestAngle(-3.0, 3.0), -(2.0 * M_PI - 6.0), 1e-9);
+  EXPECT_NEAR(shortestAngle(0.5, 1.0), 0.5, 1e-12);                // plain case, no wrap
 }

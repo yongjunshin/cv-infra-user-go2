@@ -13,6 +13,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(vision_msgs REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(go2_msgs REQUIRED)
@@ -25,7 +26,7 @@ target_include_directories(patrol_manager_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 ament_target_dependencies(patrol_manager_node
-  rclcpp rclcpp_action geometry_msgs sensor_msgs vision_msgs nav2_msgs go2_msgs tf2
+  rclcpp rclcpp_action geometry_msgs sensor_msgs std_msgs vision_msgs nav2_msgs go2_msgs tf2
   tf2_ros tf2_geometry_msgs)
 
 install(TARGETS patrol_manager_node DESTINATION lib/${PROJECT_NAME})

@@ -1,10 +1,15 @@
 # twist_mux.yaml — /cmd_vel arbitration between the autonomy stack and a human.
 #
 #   nav2 (... -> collision_monitor) --cmd_vel_autonomy--> twist_mux --> /cmd_vel
+#   patrol manager (bounce search) - cmd_vel_search ----------^
 #   any teleop source ------------- cmd_vel_teleop -----------^
 #
-# Priorities: teleop (100) beats autonomy (10) whenever it is publishing; 0.5 s of
-# silence on an input releases it. To take over by hand:
+# Priorities: a human (100) beats the bounce search (50) beats nav2 (10) whenever it is
+# publishing; 0.5 s of silence on an input releases it. The bounce search sits ABOVE
+# nav2 because during SEARCHING the manager, not nav2, is the driver — and BELOW a human
+# because a person grabbing the sticks must always win. ⚠ cmd_vel_search bypasses nav2's
+# collision_monitor by construction; its pre-collision guarantee is the manager's own
+# scan trigger (bounce_trigger_m). To take over by hand:
 #   ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -r cmd_vel:=cmd_vel_teleop
 #
 # ⚠ use_stamped MUST stay false. Jazzy twist_mux (4.5.0) defaults to
@@ -20,6 +25,10 @@ twist_mux:
         topic: cmd_vel_autonomy
         timeout: 0.5
         priority: 10
+      search:
+        topic: cmd_vel_search
+        timeout: 0.5
+        priority: 50
       teleop:
         topic: cmd_vel_teleop
         timeout: 0.5
