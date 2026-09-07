@@ -1,0 +1,33 @@
+# verify/space.pict — the input space, in Microsoft PICT's own syntax.
+#
+# cv-infra expands this into a covering array and runs one case per row, inside
+# the wallclock budget the request declares. It reads the axes as names and
+# values; what any of them MEAN is ours.
+#
+# Bind an axis to a field in the request document with `{param: <name>}`. Every
+# axis must be bound by exactly one field and every bound name must appear here —
+# an axis nothing reads is rejected rather than silently held constant.
+#
+# Cost, measured on an RTX 4080 (one sim instance = 3,356 MiB, so 4 run at once;
+# ~5 min of wallclock per run): this space is 1,296 combinations, which pairwise
+# covers in 14 cases. At repeats 3 that is 42 runs -> about 52 minutes, i.e. it
+# fits a PR gate. Three-wise is 42 cases -> about 2.6 hours, which is a nightly.
+#
+# Commit the array cv-infra emits next to this file and reference it as
+# `space.array`. Seeding the previous array is what keeps case identity — and
+# therefore the regression baselines — alive across an edit to this model.
+
+target:      person, chair
+start_x:     -6.3, -6.0, -5.7
+start_y:     -1.3, -1.0, -0.7
+start_yaw:   1.4208, 1.5708, 1.7208
+box_count:   0, 1, 2
+desk_count:  0, 1
+camera:      on, off
+lighting:    bright, dim
+
+# A chair only reads as `chair` from the front (0.834 front / 0 behind), so its
+# bearing is pinned; a standing person reads from every angle measured.
+IF [target] = "chair" THEN [start_yaw] = 1.5708;
+# Dim + camera off leaves the detector with no input at all: not a test.
+IF [lighting] = "dim" THEN [camera] = "on";
