@@ -11,7 +11,7 @@ jobs:
       checks: write
       pull-requests: write
       contents: read
-    uses: yongjunshin/cv-infra-workspace/.github/workflows/verify.yml@minimal-verify
+    uses: yongjunshin/cv-infra-workspace/.github/workflows/verify.yml@main
     with:
       sim_script: verify/run
       sim_input_space: verify/space.pict
