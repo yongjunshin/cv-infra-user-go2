@@ -1,0 +1,318 @@
+#!/usr/bin/env bash
+# verify/sim — ONE cv-infra case: stand up this app's world, bring the robot up, run one
+# patrol mission, and leave the evidence in verify/out/.
+#
+# This is the executable entrypoint the platform runs, once per PICT row, inside ONE
+# container started from verify/Dockerfile's image:
+#
+#   verify/sim --target=chair --start_x=-6.0 --start_y=-1.0 --start_yaw=1.5708 \
+#              --box_count=1 --desk_count=0
+#
+# The working directory is the checkout (read-only) and verify/out/ is the one writable
+# path. cv-infra passes ACCEPT_EULA, PRIVACY_CONSENT, NVIDIA_DRIVER_CAPABILITIES and
+# CV_SEED, and nothing else — no docker socket, no compose, no host network. The two
+# processes that used to be two compose services are two background jobs here, talking
+# over DDS inside this one container.
+#
+# EXIT CODE IS NOT A VERDICT (platform contract):
+#   0  the mission goal was actually SENT — whatever it answered. A robot that failed its
+#      mission is a FAILING CASE, and verify/oracle.py is what says so.
+#   1  the sim or the app never came up. That IS the ERROR lane: nothing was tested.
+#   2  bad argv (unknown flag / missing axis). Exits before touching /isaac-sim.
+#
+# ⚠ TWO ENVIRONMENTS IN ONE CONTAINER, AND THEY MUST NOT MIX.
+#   sim phase: /isaac-sim/setup_ros_env.sh wires the image's BUNDLED Jazzy libraries, and
+#     only when ROS_DISTRO is unset (measured; compose.yaml carries the same note). So the
+#     sim runs in a subshell that has never sourced /opt/ros.
+#   app phase: the apt-installed /opt/ros/jazzy, sourced in its OWN subshell.
+#   This script itself sources neither, so neither phase can leak into the other.
+
+set -euo pipefail
+
+# --------------------------------------------------------------------------- #
+# Fixed knobs. Not axes: changing one of these changes what the harness IS, not
+# which corner of the input space this case sits in.
+# --------------------------------------------------------------------------- #
+ROS_DOMAIN_ID_FIXED=77       # stable, not unique: nothing else shares this container
+SIM_READY_TIMEOUT_S=900      # cold first boot downloads the warehouse + Go2 + props
+APP_READY_TIMEOUT_S=180      # nav2 + YOLO + manager, no downloads
+MISSION_TIMEOUT_S=300        # the manager's own search_timeout_s is 180 sim-seconds
+POLL_INTERVAL_S=5            # each probe spins up a ros2 CLI node (~1-2 s)
+TEARDOWN_WAIT_S=30           # per process, after the signal
+
+# The checkout root, derived ONCE from this script's own location, so the same file works
+# under /cv/checkout in CI and under any path locally.
+CHECKOUT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+OUT="${CHECKOUT}/verify/out"
+WORLD_FILE="${OUT}/world.yaml"
+SIM_LOG="${OUT}/sim.log"
+APP_LOG="${OUT}/app.log"
+MISSION_TXT="${OUT}/mission.txt"
+RUN_JSON="${OUT}/run.json"
+
+SIM_SCRIPT="${CHECKOUT}/sim/patrol_world.py"
+POLICY="${CHECKOUT}/robot_sw/models/locomotion/policy.pt"
+
+SIM_PID=""
+APP_PID=""
+T0=${SECONDS}
+
+log() { printf '[cv-go2 %4ds] %s\n' "$((SECONDS - T0))" "$*" >&2; }
+die() { log "ERROR $*"; exit 1; }
+
+# --------------------------------------------------------------------------- #
+# argv — exactly the six axes of verify/space.pict, `--name=value`.
+# --------------------------------------------------------------------------- #
+target=""; start_x=""; start_y=""; start_yaw=""; box_count=""; desk_count=""
+
+usage() {
+  cat >&2 <<'EOF'
+usage: verify/sim --target=<chair|person> --start_x=<m> --start_y=<m>
+                  --start_yaw=<rad> --box_count=<n> --desk_count=<n>
+
+One cv-infra case. Every flag is an axis of verify/space.pict and is REQUIRED:
+an axis added there without a flag here must fail loudly, not be ignored.
+EOF
+}
+
+parse_args() {
+  local arg
+  for arg in "$@"; do
+    case "${arg}" in
+      --target=*)     target="${arg#*=}" ;;
+      --start_x=*)    start_x="${arg#*=}" ;;
+      --start_y=*)    start_y="${arg#*=}" ;;
+      --start_yaw=*)  start_yaw="${arg#*=}" ;;
+      --box_count=*)  box_count="${arg#*=}" ;;
+      --desk_count=*) desk_count="${arg#*=}" ;;
+      -h|--help)      usage; exit 2 ;;
+      *)
+        printf 'verify/sim: unknown argument %q\n\n' "${arg}" >&2
+        usage
+        exit 2
+        ;;
+    esac
+  done
+  local name
+  for name in target start_x start_y start_yaw box_count desk_count; do
+    if [ -z "${!name}" ]; then
+      printf 'verify/sim: missing required axis --%s\n\n' "${name}" >&2
+      usage
+      exit 2
+    fi
+  done
+}
+
+# --------------------------------------------------------------------------- #
+# Phase a — the world file. Same geometry the app was developed against
+# (sim/world.yaml), with the case's axes substituted in. `z` is never written:
+# sim/patrol_world.py owns the floor offset of every asset.
+# --------------------------------------------------------------------------- #
+write_world() {
+  local target_yaw i
+  # A chair only reads as `chair` from the front, so it faces the approaching robot;
+  # a standing person reads from every angle measured, so it just faces down-lane.
+  if [ "${target}" = "chair" ]; then target_yaw="-1.5708"; else target_yaw="3.1416"; fi
+
+  {
+    echo "# Generated by verify/sim for one cv-infra case — do not edit."
+    echo "spawn:"
+    echo "  x: ${start_x}"
+    echo "  y: ${start_y}"
+    echo "  yaw: ${start_yaw}"
+    echo "props:"
+    echo "  - asset: ${target}"
+    echo "    x: -6.0"
+    echo "    y: 5.2"
+    echo "    yaw: ${target_yaw}"
+    # Boxes strung across the lane at y=1.5, desks stacked up the +Y aisle: the two
+    # clutter axes, one row each.
+    for ((i = 0; i < box_count; i++)); do
+      echo "  - asset: box"
+      echo "    x: $(awk -v i="${i}" 'BEGIN { printf "%.4f", -5.0 + i * 0.8 }')"
+      echo "    y: 1.5"
+      echo "    yaw: 0.0"
+    done
+    for ((i = 0; i < desk_count; i++)); do
+      echo "  - asset: desk"
+      echo "    x: -4.0"
+      echo "    y: $(awk -v i="${i}" 'BEGIN { printf "%.4f", 3.0 + i * 3.0 }')"
+      echo "    yaw: 0.0"
+    done
+  } > "${WORLD_FILE}"
+  log "world written: ${WORLD_FILE} (target=${target} boxes=${box_count} desks=${desk_count})"
+}
+
+# --------------------------------------------------------------------------- #
+# Phase b — the simulator. `setsid` puts it in its OWN process group, which is
+# what makes teardown work: /isaac-sim/python.sh does not exec its python, so a
+# signal sent to the pid alone would hit the wrapper shell and leave Kit running.
+# --------------------------------------------------------------------------- #
+start_sim() {
+  [ -f "${SIM_SCRIPT}" ] || die "sim script not found: ${SIM_SCRIPT}"
+  [ -f "${POLICY}" ] || die "locomotion policy not found: ${POLICY}"
+  # shellcheck disable=SC2016  # $1..$3 are for the INNER shell — passing the paths as
+  # positional arguments instead of interpolating them is what keeps a path with a space
+  # (or anything else) from becoming shell.
+  setsid bash -c '
+    cd /isaac-sim || exit 1
+    # No /opt/ros here, ever — see the ⚠ at the top of this file.
+    # shellcheck disable=SC1091
+    source setup_ros_env.sh
+    exec ./python.sh "$1" --world "$2" --policy "$3"
+  ' _ "${SIM_SCRIPT}" "${WORLD_FILE}" "${POLICY}" > "${SIM_LOG}" 2>&1 &
+  SIM_PID=$!
+  log "sim started (pid ${SIM_PID}) -> ${SIM_LOG}"
+}
+
+# --------------------------------------------------------------------------- #
+# Phase c — wait for /clock. The sim is up when the world is stepping and the ROS
+# node is publishing; /clock is the first thing every step emits.
+# --------------------------------------------------------------------------- #
+ros_probe() {
+  # $1 = `topic list` | `action list`; prints the list on stdout, swallows the noise a
+  # cold DDS discovery prints on stderr.
+  # set +eu: the ROS setup scripts read unset variables and return non-zero on paths
+  # that are not errors — neither is a reason to abort this probe.
+  ( set +eu
+    # shellcheck disable=SC1091
+    source /opt/ros/jazzy/setup.bash
+    # shellcheck disable=SC2086
+    exec ros2 $1
+  ) 2>/dev/null || true
+}
+
+wait_for() {
+  local what="$1" probe="$2" needle="$3" timeout="$4" pid="$5" started="${SECONDS}"
+  while [ $((SECONDS - started)) -lt "${timeout}" ]; do
+    if ! kill -0 "${pid}" 2>/dev/null; then
+      die "${what}: process ${pid} died after $((SECONDS - started))s — see ${OUT}"
+    fi
+    if ros_probe "${probe}" | grep -qx -- "${needle}"; then
+      log "${what}: ${needle} after $((SECONDS - started))s"
+      return 0
+    fi
+    sleep "${POLL_INTERVAL_S}"
+  done
+  die "${what}: ${needle} did not appear within ${timeout}s"
+}
+
+# --------------------------------------------------------------------------- #
+# Phase d — the app. Exactly the image's own default CMD (ros_entrypoint.sh's two
+# `source` lines are inlined here), backgrounded in its own process group so the
+# mission can be sent from this shell and teardown can signal the whole launch tree.
+# --------------------------------------------------------------------------- #
+start_app() {
+  setsid bash -c '
+    # shellcheck disable=SC1091
+    source /opt/ros/jazzy/setup.bash
+    # shellcheck disable=SC1091
+    source /opt/go2_ws/install/setup.bash
+    exec ros2 launch go2_bringup go2_patrol.launch.py use_sim_time:=true
+  ' > "${APP_LOG}" 2>&1 &
+  APP_PID=$!
+  log "app started (pid ${APP_PID}) -> ${APP_LOG}"
+}
+
+# --------------------------------------------------------------------------- #
+# Phase e — the mission. `timeout` is the outer bound; the manager's own
+# search_timeout_s (180 sim-seconds) is the inner one.
+# --------------------------------------------------------------------------- #
+rc_goal=1
+send_goal() {
+  local started="${SECONDS}"
+  set +e
+  # shellcheck disable=SC2016  # $1 is the INNER shell's — the target never reaches this
+  # command line as text.
+  timeout "${MISSION_TIMEOUT_S}" bash -c '
+    # shellcheck disable=SC1091
+    source /opt/ros/jazzy/setup.bash
+    # shellcheck disable=SC1091
+    source /opt/go2_ws/install/setup.bash
+    exec ros2 action send_goal /patrol go2_msgs/action/Patrol "{target_class: $1}" --feedback
+  ' _ "${target}" > "${MISSION_TXT}" 2>&1
+  rc_goal=$?
+  set -e
+  mission_s=$((SECONDS - started))
+  log "mission finished rc=${rc_goal} after ${mission_s}s -> ${MISSION_TXT}"
+}
+
+write_run_json() {
+  cat > "${RUN_JSON}" <<EOF
+{
+  "target": "${target}",
+  "seed": "${CV_SEED:-}",
+  "rc_goal": ${rc_goal},
+  "phases": {
+    "sim_ready_s": ${sim_ready_s:-null},
+    "app_ready_s": ${app_ready_s:-null},
+    "mission_s": ${mission_s:-null},
+    "total_s": $((SECONDS - T0))
+  }
+}
+EOF
+}
+
+# --------------------------------------------------------------------------- #
+# Phase f — teardown. Always runs, bounded, and never changes the exit code: the
+# trap fires on the way out, whatever the way out was.
+# --------------------------------------------------------------------------- #
+stop_group() {
+  local pid="$1" signal="$2" what="$3" watchdog
+  [ -n "${pid}" ] || return 0
+  log "teardown: ${signal} -> ${what} (pid ${pid})"
+  # The negative pid is the POINT (see start_sim): the signal has to reach the whole
+  # process group, not just the wrapper shell. Plain pid is the fallback for the case
+  # where setsid did not get its own group.
+  kill -"${signal}" -- -"${pid}" 2>/dev/null || kill -"${signal}" "${pid}" 2>/dev/null || true
+  # `wait` is what REAPS the child — polling `kill -0` would see the zombie of an
+  # already-exited process and burn the whole timeout on nothing. The watchdog is what
+  # keeps the wait bounded.
+  ( sleep "${TEARDOWN_WAIT_S}"
+    kill -KILL -- -"${pid}" 2>/dev/null || kill -KILL "${pid}" 2>/dev/null || true ) &
+  watchdog=$!
+  wait "${pid}" 2>/dev/null || true
+  kill "${watchdog}" 2>/dev/null || true
+  wait "${watchdog}" 2>/dev/null || true
+}
+
+teardown() {
+  # The app first: ros2 launch forwards SIGINT to every node it started, and a node that
+  # is shut down cleanly stops commanding the robot before the world disappears.
+  stop_group "${APP_PID}" INT "app"
+  # Then the sim: patrol_world.py installs a SIGTERM handler that leaves the loop.
+  stop_group "${SIM_PID}" TERM "sim"
+}
+
+main() {
+  parse_args "$@"
+  # Everything below writes into verify/out/, the one read-write path in the checkout.
+  mkdir -p "${OUT}"
+  export ROS_DOMAIN_ID="${ROS_DOMAIN_ID_FIXED}"
+  # The sim's progress prints are the only view into a headless boot; without this they
+  # sit in python's block buffer and sim.log stays empty until the process ends.
+  export PYTHONUNBUFFERED=1
+  # ASSUMPTION: $HOME (/isaac-sim for the stock image's uid 1234) may not be writable in
+  # every mount layout, and the ros2 CLI wants a log directory before it will start. /tmp
+  # always is, and nothing in a case survives the container anyway.
+  export ROS_HOME=/tmp/.ros
+
+  log "case target=${target} spawn=(${start_x}, ${start_y}, ${start_yaw}) boxes=${box_count} desks=${desk_count} seed=${CV_SEED:-unset}"
+  trap teardown EXIT
+
+  write_world
+  start_sim
+  wait_for "sim" "topic list" "/clock" "${SIM_READY_TIMEOUT_S}" "${SIM_PID}"
+  sim_ready_s=$((SECONDS - T0))
+
+  start_app
+  wait_for "app" "action list" "/patrol" "${APP_READY_TIMEOUT_S}" "${APP_PID}"
+  app_ready_s=$((SECONDS - T0))
+
+  send_goal
+  write_run_json
+  # rc_goal is evidence, not a verdict — verify/oracle.py reads it out of run.json.
+  return 0
+}
+
+main "$@"

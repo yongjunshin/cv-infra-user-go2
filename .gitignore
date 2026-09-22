@@ -3,6 +3,12 @@ build/
 install/
 log/
 
+# cv-infra case output. The DIRECTORY itself is committed (verify/out/.gitkeep) because
+# the platform mounts the case's own output dir over that path in a read-only checkout;
+# what verify/sim writes into it is run residue.
+verify/out/*
+!verify/out/.gitkeep
+
 # Python caches
 __pycache__/
 *.py[cod]

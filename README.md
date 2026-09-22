@@ -69,6 +69,7 @@ docker exec go2-robot bash -c 'source /opt/ros/jazzy/setup.bash && source /opt/g
 sim/        시뮬레이션 세계만: Isaac 부팅 스크립트 + world.yaml (환경 명세)
 robot_sw/   로봇의 모든 것: ROS 노드(src/) + AI 산출물(models/)
 web/        사용자 클라이언트 (rosbridge + 카메라 스트림 + 정적 UI)
+verify/     CI 검증만: 케이스 실행 스크립트 + 입력 공간 + 판정자 + 검증 이미지 (아래 §cv-infra 검증)
 ```
 
 **파일의 소속과 실행 위치는 별개다.** 보행 정책(`robot_sw/models/locomotion/policy.pt`)은
@@ -103,19 +104,107 @@ sim 코드는 손대지 않는다. 단, 정책이 바뀌면 활성화 런지가 
 
 ## cv-infra 검증
 
-`verify/space.pict`는 이 앱의 환경·시작 자세·표적 조합을 선언한다. GitHub Actions는
-PICT가 만든 각 케이스마다 cv-infra의 runtime image에서 `verify/run`을 호출한다. 인프라는
-이 명령이 Docker Compose와 ROS 2 action을 사용하는지 알지 못하고, `CASE`·`OUT`·`SEED`를
-전달하고 결과만 수거한다.
+PR을 열면 GitHub Actions가 [cv-infra](https://github.com/yongjunshin/cv-infra-workspace)의
+재사용 워크플로를 호출한다. 플랫폼은 `verify/space.pict`를 페어와이즈 커버링 배열로 펼쳐
+**케이스마다 컨테이너 하나**를 띄우고 그 안에서 `verify/sim --<축>=<값> …`을 돌린 뒤,
+`verify/oracle.py`의 판정을 PR에 Check · sticky 코멘트 · 아티팩트(케이스별 `verify/out` zip +
+컨테이너 로그)로 돌려준다. 플랫폼은 여기서 무엇이 순찰이고 무엇이 표적인지 모른다 — 축 이름을
+argv로 넘기고, `verify/out`을 거두고, 오라클이 찍은 평평한 JSON 한 줄의 **타입**만 읽는다.
 
-`verify/run`은 기존 로컬 앱과 같은 `sim` + `robot_sw` 경로를 케이스별로 기동한 뒤 `/patrol`
-action을 호출한다. 웹 컨테이너와 브라우저는 검증하지 않는다. `verify/judge`는 `$OUT`의
-mission evidence를 읽어 flat JSON verdict를 출력한다.
+### 파일 5개 + 워크플로 1개
 
-로컬 단일 케이스는 다음처럼 실행할 수 있다.
+| 파일 | 무엇 |
+|---|---|
+| `verify/Dockerfile` | **검증 이미지.** 핀된 Isaac Sim 5.1.0 위에 `robot_sw/`를 그대로 구워 올린다(`robot_sw/Dockerfile`의 레이어·핀을 그대로 재생). 케이스 컨테이너는 하나뿐이라 시뮬과 앱이 같은 이미지에 있어야 한다. 단, **`sim/patrol_world.py`와 보행 정책은 굽지 않는다** — 런타임에 체크아웃에서 읽는다(compose가 마운트하는 것과 같다). |
+| `verify/sim` | **케이스 실행 entrypoint**(bash). 축 6개를 `--name=value`로 받아 ① `verify/out/world.yaml`을 쓰고 ② 시뮬을 띄우고(`/clock` 대기) ③ 앱을 띄우고(`/patrol` 대기) ④ `/patrol` 골을 보내고 ⑤ 항상 정리한다. **종료코드는 판정이 아니다**: 골을 보냈으면 0(미션 실패는 오라클의 몫), 시뮬·앱이 안 뜨면 1(= ERROR 레인), argv가 틀리면 2. |
+| `verify/space.pict` | **입력 공간**(PICT 문법). 축 이름 = `verify/sim`의 플래그. `target: chair` → `--target=chair`. k=2에서 **12 케이스**. |
+| `verify/oracle.py` | **판정.** 같은 이미지·같은 argv로(GPU 없이) 돌며 `verify/out`의 증거를 읽고 평평한 JSON 한 줄을 stdout에 낸다. |
+| `verify/out/.gitkeep` | 플랫폼이 체크아웃을 **읽기 전용**으로 마운트하고 이 경로에만 케이스별 호스트 디렉토리를 읽기·쓰기로 덮으므로, 이 디렉토리는 **커밋돼 있어야** 한다. 내용물은 `.gitignore`가 막는다. |
+| `.github/workflows/verify.yml` | 잡 하나(`uses: …@main`)와 `with:` 입력 9개. 이 저장소가 유지하는 통합 표면 전부. |
+
+### 판정은 타입으로 말한다
+
+| 키 | 타입 | 뜻 | 증거 파일 |
+|---|---|---|---|
+| `sim_booted` | bool(체크) | 세계가 ready 배너를 찍었다 | `verify/out/sim.log` |
+| `app_ready` | bool(체크) | `go2_patrol_manager`가 `/patrol`을 서빙하기 시작했다 | `verify/out/app.log` |
+| `action_succeeded` | bool(체크) | `/patrol` 골이 `SUCCEEDED`로 끝났다 | `verify/out/mission.txt` |
+| `target_found` | bool(체크) | 결과의 `found`가 true다 | `verify/out/mission.txt` |
+| `mission_wall_s` | 숫자(지표) | 골 전송부터 종료까지 벽시계 초. 게이트하지 않고 커밋 간 변화만 본다 | `verify/out/run.json` |
+| `note` | 문자열(메모) | 표적·미션 꼬리 3줄, 또는 **없는 증거 파일 이름** | — |
+
+케이스는 **bool이 전부 true일 때** pass다. 증거 파일이 없으면 해당 bool은 false이고 `note`가
+어느 파일인지 말한다 — 트레이스백을 내면 ERROR(판정 없음)가 되어 오히려 정보가 줄기 때문이다.
+
+> ⚠ **exit code는 판정이 아니다.** `sim/patrol_world.py`는 `os._exit`로 끝나고 stock
+> `python.sh`는 비0을 1로 뭉갠다. 그래서 `verify/sim`의 종료코드는 "이 케이스가 ERROR였나"만
+> 의미하고, pass/fail은 전부 `verify/oracle.py`가 결정한다.
+
+### 검증 이미지 빌드 · 푸시 · 다이제스트 핀
+
+`sim_image`는 **다이제스트 핀 필수**(플랫폼이 태그를 거부한다). 빌드 컨텍스트는 **저장소 루트**다
+(`verify/Dockerfile`이 `robot_sw/`를 COPY한다).
 
 ```bash
-CASE=/path/to/case.json OUT=/path/to/out CV_CHECKOUT_HOST="$PWD" CV_OUT_HOST=/path/to/out \
-  docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$PWD:/cv/checkout:ro" \
-  -v "/path/to/out:/cv/checkout/verify/out:rw" go2-verify-runtime:local verify/run
+TAG=$(git rev-parse --short HEAD)
+IMAGE=ghcr.io/yongjunshin/cv-infra-user-go2/go2-verify
+
+docker build -f verify/Dockerfile -t "$IMAGE:$TAG" .
+docker push "$IMAGE:$TAG"
+docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$TAG"   # -> ghcr.io/...@sha256:…
 ```
+
+마지막 줄이 찍은 `name@sha256:…`을 `.github/workflows/verify.yml`의 `sim_image`에 그대로
+붙여 넣는다.
+
+> 이미지를 **처음** 바꾸면 워크스테이션의 Omniverse 캐시 트리도 새 다이제스트용으로 하나 더
+> 있어야 한다(cv-infra는 Kit 셰이더·CUDA 캐시를 이미지별로 분리한다). 플랫폼은 조용히 콜드로
+> 돌지 않고 필요한 `warm_cache.sh …/<digest12> provision` 명령을 그대로 찍으며 멈춘다 —
+> 그 줄을 러너 호스트에서 한 번 실행하면 된다. ghcr pull 권한(러너의 `docker login ghcr.io`)도
+> 같은 1회 준비물이다.
+
+> ⚠ **`robot_sw/`를 고쳤으면 같은 PR에서 재빌드·푸시·재핀한다.** 앱이 곧 이미지이기 때문에,
+> 노드를 고치고 다이제스트를 그대로 둔 PR은 **옛 앱**을 검증하고 그 diff에 대해서는 아무 말도
+> 하지 않는다. `sim/`과 `robot_sw/models/`는 런타임에 체크아웃에서 읽으므로 재빌드가 필요 없다.
+>
+> `verify/Dockerfile`의 ARG는 전부 2026-09-23에 이 베이스 위에서 `apt-cache madison`으로 잰
+> 정확한 버전이다. ⚠ `robot_sw/Dockerfile`과 **같은 문자열이 아니다**: packages.ros.org는
+> datestamp 접미사를 교체하므로 robot_sw의 2026-09-01 핀은 더 이상 해석되지 않고(첫 빌드가
+> 정확히 거기서 죽었다), 그 사이 nav2 자체도 1.3.12→1.3.13으로 올라갔다. 즉 검증 이미지는
+> nav2 1.3.13, 2026-09-01에 빌드한 compose 리그는 1.3.12다 — robot_sw를 다음에 재빌드할 때
+> 두 파일의 핀을 함께 맞춘다. 핀이 해석되지 않으면 `apt-cache madison <pkg>`로 다시 재서
+> ARG를 바꾼다(`=`를 지우지 않는다).
+
+### 로컬에서 케이스 하나 돌리기
+
+CI가 케이스마다 하는 것과 **같은 한 줄**이다(엔트리포인트 래퍼까지 동일).
+
+```bash
+mkdir -p verify/out
+docker run --rm --gpus all \
+  -e ACCEPT_EULA=Y -e PRIVACY_CONSENT=Y -e NVIDIA_DRIVER_CAPABILITIES=all -e CV_SEED=7 \
+  -v "$PWD:/cv/checkout:ro" \
+  -v "$PWD/verify/out:/cv/checkout/verify/out:rw" \
+  -w /cv/checkout --shm-size=8g \
+  --entrypoint /bin/sh \
+  ghcr.io/yongjunshin/cv-infra-user-go2/go2-verify@sha256:PINNED_AFTER_FIRST_BUILD \
+  -lc 'exec "$0" "$@"' verify/sim \
+    --target=chair --start_x=-6.0 --start_y=-1.0 --start_yaw=1.5708 \
+    --box_count=1 --desk_count=0
+
+python3 verify/oracle.py --target=chair --start_x=-6.0 --start_y=-1.0 --start_yaw=1.5708 \
+    --box_count=1 --desk_count=0
+```
+
+체크아웃이 `:ro`이고 `verify/out`만 `:rw`인 것이 플랫폼이 하는 일 그대로다 — 그래서 스크립트가
+쓰는 경로는 전부 체크아웃 루트 기준 상대경로여야 한다. 오라클은 stdlib만 쓰므로 노트북의 맨
+`python3`로도 돈다(증거 파일만 있으면 된다).
+
+케이스가 끝나면 `verify/out`에 `world.yaml`(그 케이스의 세계) · `sim.log` · `app.log` ·
+`mission.txt` · `run.json`이 남는다. CI에서는 이 디렉토리가 통째로 케이스별 zip이 되어
+아티팩트로 내려온다.
+
+### 검증하지 않는 것
+
+`web/`(rosbridge + 브라우저 UI)은 검증 대상이 아니다. 케이스 컨테이너에는 호스트 네트워크도
+docker 소켓도 없고, 사람이 브라우저로 하는 일을 CI가 대신 주장하지 않는다.

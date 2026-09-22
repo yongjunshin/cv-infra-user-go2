@@ -1,0 +1,41 @@
+# verify/Dockerfile.dockerignore — BuildKit's PER-DOCKERFILE ignore file
+# (`<dockerfile>.dockerignore` wins over the context-root `.dockerignore`).
+#
+# The build context is the REPOSITORY ROOT, because verify/Dockerfile copies
+# robot_sw/src and robot_sw/constraints-detector.txt. Everything else in this repo is
+# either read from the read-only checkout at run time (sim/, robot_sw/models/) or has
+# nothing to do with verification at all (web/) — sending it would only make the context
+# bigger and the layer cache more fragile.
+#
+# ⚠ PATTERNS NEED `**/` (measured on robot_sw/.dockerignore, 2026-09-01): a
+# .dockerignore is NOT a .gitignore — `__pycache__/` matches only the CONTEXT ROOT's
+# directory, so it would leave src/go2_detector/go2_detector/__pycache__ in place and a
+# stale .pyc would shadow a source file inside the image.
+
+# Not part of the verification image.
+web/
+compose.yaml
+README.md
+cv-infra-contract-update-proposal.md
+
+# Run-time inputs, read from the checkout mount — never baked (see verify/Dockerfile).
+sim/
+robot_sw/models/
+
+# Case output. The directory is committed (verify/out/.gitkeep); its contents are run
+# residue and would invalidate the context hash on every local run.
+verify/out/
+
+# Repository metadata and developer working-tree noise.
+.git/
+.github/
+.env
+.env.example
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/*.egg-info
+**/build
+**/install
+**/log
+.ruff_cache/

@@ -1,18 +1,29 @@
-# verify/space.pict — the input space, in Microsoft PICT's own syntax.
+# verify/space.pict — this repository's input space, in Microsoft PICT's own syntax.
 #
-# cv-infra expands this into a covering array and runs one case per row, inside
-# the wallclock budget the request declares. It reads the axes as names and
-# values; what any of them MEAN is ours.
+# cv-infra expands this into a covering array and runs verify/sim once per row,
+# `repeats` times. It reads names and values; what any of them MEAN is ours.
 #
-# Bind an axis to a field in the request document with `{param: <name>}`. Every
-# axis must be bound by exactly one field and every bound name must appear here —
-# an axis nothing reads is rejected rather than silently held constant.
+# AXIS NAME -> ARGV. Every axis becomes one flag on verify/sim: `target: chair` is
+# handed to the script as `--target=chair`, in the order declared here. So a name must
+# match verify/sim's parser exactly and must be CLI-flag-safe (^[A-Za-z][A-Za-z0-9_-]*$,
+# and never `help`/`h`). Values travel as TEXT — verify/sim writes them straight into
+# verify/out/world.yaml and verify/oracle.py re-reads them off the same argv.
 #
-# This six-axis space has 2 * 3 * 3 * 3 * 2 * 2 = 216 combinations. PICT pairwise
-# coverage currently emits 12 cases; the reusable workflow can truncate the prefix
-# when a caller supplies a smaller local budget, while the CI budget is sized for the
-# complete array. Case identity is derived from these values, so changing an axis is
-# an intentional baseline change.
+# THIS FILE IS THE COMMITTED ARRAY. The covering array is derived from this file at every
+# run, and each case is identified by a hash of its own axis assignment, so a baseline
+# follows a case across commits only as long as its values are untouched. Editing a value
+# (or a name) retires the old case and starts the new one without a baseline — a rename
+# is a deliberate act, not a formatting change.
+#
+# SIZE. Six axes = 2 * 3 * 3 * 3 * 3 * 2 = 324 combinations; the constraint at the bottom
+# removes two thirds of the chair half. Pairwise (k=2) covers it in **12 rows**, measured
+# 2026-09-22 with the pinned PICT build (`pict verify/space.pict /o:2` -> 12 data rows).
+# One case measured 167 s wall on a cold cache (2026-09-23, etri6000; see the budget
+# comment in .github/workflows/verify.yml) — the workflow's `budget: 10800` is sized
+# against the 300 s mission ceiling plus a cold boot, not against that best case.
+#
+# PICT picks the CELL: it is discrete and combinatorial, so it answers "which combinations
+# must be tried". "How much does one cell vary" is what `repeats` answers instead.
 
 target:      person, chair
 start_x:     -6.3, -6.0, -5.7
