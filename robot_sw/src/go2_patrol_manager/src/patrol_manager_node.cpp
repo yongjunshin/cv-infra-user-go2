@@ -27,6 +27,12 @@
 // an approach that ends facing the target because it drove straight at it. Nav2 stays the
 // single producer of autonomy velocities: this node never publishes any.
 //
+// ⚠ POLICY SWAP 2026-09-02/03: the in-place-yaw figure above is the FLAT policy's. The
+// robust_creep policy now pivots at 70-93 % of command, so a pivot is no longer
+// impossible — but its creep dead zone is DEEPER (0.10-0.20 m/s at 7-13 %), which is
+// the constraint this design actually rests on. Kept as is: drive-derived headings
+// cost nothing on a robot that can pivot, and the creep limit is unchanged in kind.
+//
 // ── Perception is REQUIRED ────────────────────────────────────────────────────────
 // A patrol with no camera is not a degraded patrol, it is a misconfiguration. When no
 // /detections and/or no camera_info arrive within `perception_probe_s`, the mission
@@ -244,9 +250,11 @@ public:
     // must be clear (25 beams x 0.1125 deg/beam ~ +-2.8 deg... widened by the clear
     // window in metres this maps to at bounce_clear_m).
     bounce_window_halfwidth_ = declare_parameter<int>("bounce_window_halfwidth", 60);
-    // The turn is an ARC, never a pivot: this policy executes in-place yaw at ~6 % of
-    // the commanded rate but tracks it at ~91 % while walking. 0.25 m/s stays above the
-    // dead zone; 0.8 rad/s is the app's own wz ceiling.
+    // The turn is an ARC, never a pivot. The flat policy executed in-place yaw at ~6 % of
+    // command and ~91 % while walking; the robust_creep policy (2026-09-02) does 70-93 %
+    // either way, so the arc is now a preference rather than a necessity — and it still
+    // costs nothing. ⚠ 0.25 m/s is now only just above the dead zone (42 % of command
+    // measured 2026-09-03, against 0.30 -> 73 %): lower it and the bounce stops moving.
     bounce_turn_speed_m_s_ = declare_parameter<double>("bounce_turn_speed_m_s", 0.25);
     bounce_turn_wz_ = declare_parameter<double>("bounce_turn_wz", 0.8);
     bounce_heading_tol_rad_ = declare_parameter<double>("bounce_heading_tol_rad", 0.17);

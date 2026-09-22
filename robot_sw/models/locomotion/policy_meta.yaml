@@ -9,6 +9,29 @@
 # file and the robot is being driven by a plant the network has never seen, which
 # does not raise anything — it just walks badly.
 #
+# PROVENANCE OF THE WEIGHTS NEXT TO THIS FILE (policy.pt) — swapped 2026-09-02.
+#   experiment  unitree_go2_robust_creep — IsaacLab + rsl_rl PPO. Blind (no height
+#               scan) rough-terrain curriculum (flat / random_rough / pyramid slopes
+#               ...) with domain randomization (ground friction, base mass, base COM,
+#               external pushes) and a custom velocity command that dedicates 10 %
+#               of the envs to CREEPING (|v| <= 0.3 m/s) and 15 % to in-place
+#               SPINNING (0.3-1.0 rad/s) — the two regimes the previous flat policy
+#               executed at 5-23 % / ~6 % (README "보행 정책의 성격").
+#   run         etri6000:/home/etri/dev/VLA-WS/checkpoints/logs/rsl_rl/
+#               unitree_go2_robust_creep/2026-09-02_11-01-41 (resumed from
+#               2026-09-02_09-05-23 @ model_2999; only delta between the two runs'
+#               env.yaml: creep range 0.5 -> 0.3 m/s)
+#   checkpoint  model_5200.pt -> exported/policy.pt (TorchScript, actor only:
+#               MLP 48 -> 512 -> 256 -> 128 -> 12, ELU, no observation normalization)
+#   sha256      ca4f184c79594359811a76d7e1a97979976e5c993f658ce34e6677dafa818650
+#               (775,442 bytes; replaces checkpoints/go2_flat_pretrained/exported/
+#               policy.pt 73338e49…, 174,184 bytes)
+#   Every value below was re-derived from that run's params/env.yaml and is
+#   UNCHANGED from the previous policy: the same 7 observation terms in the same
+#   order (48-D, scale/clip none), JointPositionAction scale 0.25 on the default
+#   offsets, sim dt 0.005 x decimation 4, DCMotor stiffness 25 / damping 0.5 /
+#   effort 23.5 / velocity 30 / saturation 23.5, and the same default stance.
+#
 # sim/patrol_world.py holds the other half of the split: HARDWARE-TWIN constants
 # (the robot USD, the spawn height, the joint order, the motor's torque/speed
 # limits, the sensor mounts and optics, the publish rates). Those describe the

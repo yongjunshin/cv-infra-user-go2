@@ -15,6 +15,12 @@
 // heading has to come out of the DRIVE itself. That is why the standoff pose is always
 // "on the segment from the target toward the robot, facing the target" — driving to it is
 // a straight approach whose final heading already points at the target.
+//
+// ⚠ POLICY SWAP 2026-09-02/03: the in-place-yaw figure above is the FLAT policy's. The
+// robust_creep policy now pivots at 70-93 % of command, so a pivot is no longer
+// impossible — but its creep dead zone is DEEPER (0.10-0.20 m/s at 7-13 %), which is
+// the constraint this design actually rests on. Kept as is: drive-derived headings
+// cost nothing on a robot that can pivot, and the creep limit is unchanged in kind.
 
 #ifndef GO2_PATROL_MANAGER__PATROL_LOGIC_HPP_
 #define GO2_PATROL_MANAGER__PATROL_LOGIC_HPP_

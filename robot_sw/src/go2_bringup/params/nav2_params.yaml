@@ -19,14 +19,29 @@
 #  2 | amcl.base_frame_id                      | base_footprint -> base_link  | the sim publishes odom->base_link and NOTHING publishes base_footprint (tf measured). Upstream carter_navigation also uses base_link on this map.
 #  3 | collision_monitor.base_frame_id         | base_footprint -> base_link  | same frame, same reason. A collision monitor that cannot transform its base frame stops passing commands at all — silent immobility.
 #  4 | amcl.max_beams                          | 60 -> 360                    | upstream carter_navigation params for THIS warehouse/map use 360; our scan carries 3200 beams (measured).
-#  5 | amcl.set_initial_pose / initial_pose    | (absent) -> true / SETTLED pose | nothing publishes /initialpose in a plain run, so without this the filter has to global-localise first. Upstream carter_navigation self-seeds the same way for the same reason. The VALUE is the pose the robot settles at after the policy's ~0.97 m activation transient (measured live), not the declared spawn — see the block itself.
+#  5 | amcl.set_initial_pose / initial_pose    | (absent) -> true / SETTLED pose | nothing publishes /initialpose in a plain run, so without this the filter has to global-localise first. Upstream carter_navigation self-seeds the same way for the same reason. The VALUE is the pose the robot settles at after the policy's activation transient (~0.66 m + 0.25-0.36 rad of yaw on the 2026-09-02 robust_creep policy; ~0.97 m straight on the earlier flat policy — measured live), not the declared spawn — see the block itself.
 #  6 | FollowPath(MPPI).wz_max                 | 1.9 -> 0.8                   | the policy tracks 0.730 rad/s of a commanded 0.8 while walking (91 %) — beyond that nothing is measured, and an untracked command makes MPPI's own model wrong. Upstream carter uses 0.7 rad/s here.
 #  7 | velocity_smoother.max/min_velocity[2]   | +-2.0 -> +-0.8               | same ceiling at the last shaping stage: nav2 remaps controller AND behavior cmd_vel to cmd_vel_nav -> velocity_smoother -> collision_monitor (verified in the pinned nav2_bringup navigation_launch.py), so this one number caps every autonomy source.
-#  8 | general_goal_checker.yaw_goal_tolerance | 0.25 -> 3.15 (> pi)          | orientation-free goal. In-place yaw runs at 6 % of command (measured), so a final-heading requirement is one this policy cannot satisfy, and this app's missions do not need one.
-#  9 | bt_navigator.default_nav_to_pose_bt_xml | (absent) -> our no-spin tree | same measurement — see behavior_trees/navigate_to_pose_no_spin.xml, which is the stock tree with the `<Spin>` recovery line deleted and nothing else.
+#  8 | general_goal_checker.yaw_goal_tolerance | 0.25 -> 3.15 (> pi)          | orientation-free goal. Originally because in-place yaw ran at 6 % of command on the flat policy; the 2026-09-02 policy does 70-93 % (see the NOTE below), so this is now a CHOICE, not a limit — this app's missions need no final heading, and an orientation-free goal is one less thing for the controller to spend the budget on.
+#  9 | bt_navigator.default_nav_to_pose_bt_xml | (absent) -> our no-spin tree | same origin as delta 8 — see behavior_trees/navigate_to_pose_no_spin.xml, which is the stock tree with the `<Spin>` recovery line deleted and nothing else. KEPT after the 2026-09-02 policy swap: Spin is now executable (70-93 %), so restoring it is available headroom, but nothing measured needs it and re-adding a recovery is a behaviour change of its own.
 # 10 | scan sources (both costmaps)            | (absent) -> min_obstacle_height 0.15 | the scan plane sits 0.43 m above the floor, so body pitch puts FLOOR returns in the scan (~4.3 m ahead at 0.1 rad). Height-filtering them is this app's job. 0.15 m is the threshold stock already uses for the same purpose in collision_monitor's scan source (below).
 # 11 | general_goal_checker.xy_goal_tolerance  | 0.25 -> 0.50                 | live measurement: this policy does not execute the creep commands MPPI issues inside 0.4 m (0.035 m/s -> 4.6 % of it), so a 0.25 m checker never fires and the recovery ladder runs forever. Full sweep + belief-error numbers at the parameter.
 # 12 | collision_monitor.cmd_vel_out_topic     | cmd_vel -> cmd_vel_autonomy  | twist_mux owns /cmd_vel now and arbitrates this stack against teleop (../params/twist_mux.yaml). NOT cmd_vel_nav: nav2_bringup remaps velocity_smoother's INPUT to that name (verified in the pinned deb, composed and plain), so publishing the gate's output there is a feedback loop.
+# 13 | FollowPath(MPPI).ax_max                | 3.0 -> 8.0                   | NOT a plant property: it is how far MPPI may step its command in ONE model step (ax_max * model_dt = 0.05 s). MPPI feeds back on the MEASURED speed, and this locomotion policy executes <0.25 m/s commands at 7-13 %, so a 0.15 m/s step moves the robot 0.002 m/s, the measured speed never rises, and the next step is the same one: a deadlock inside the dead zone (measured live 2026-09-03: cmd 0.11 m/s -> 0.002 m/s actual, held for 60 s, 12x "Failed to make progress", every patrol approach aborted). 8.0 makes one step 0.40 m/s, which this policy executes at 97 %. The REAL acceleration limiter stays velocity_smoother.max_accel 2.5 m/s^2, which ramps OPEN_LOOP and therefore cannot deadlock.
+#
+# NOTE 2026-09-02 — the locomotion policy was swapped (robot_sw/models/locomotion/
+# policy_meta.yaml, PROVENANCE). Re-measured on the new policy, live, by teleop sweeps:
+#   * in-place yaw now executes at 70 % (0.3 rad/s) / 83 % (0.5) / 93 % (0.8) of command
+#     — the 6 % that motivated deltas 8/9 and the no-spin BT is GONE. Those deltas are
+#     left unchanged on purpose (safe either way); re-tuning them is separate work.
+#   * the low-speed dead zone is still there and is DEEPER in the 0.10-0.20 band
+#     (0.10 -> 7 %, 0.15 -> 11 %, 0.20 -> 13 %, 0.25 -> 42 %, 0.30 -> 73 %, 0.40 -> 97 %;
+#     the flat policy did 23 % / 17 % / 49 % at the first three). Delta 11 and the
+#     creep-avoidance tuning still hold, and delta 13 was added because MPPI's own
+#     ramp out of standstill now lands inside the dead zone.
+#   * the body stands at 0.385-0.388 m (was 0.28), so the scan plane of delta 10 sits
+#     ~0.54 m up; the 0.15 m height filter is unaffected.
+#   * delta 5's settled pose was re-derived (block at the parameter).
 #
 # EXPLICITLY NOT CHANGED (recorded so the next reader does not "fix" them blindly):
 #   - controller `FollowPath` = MPPI with `motion_model: "DiffDrive"`, vy unused.
@@ -102,10 +117,25 @@ amcl:
     # map (`set_initial_pose: true` + `initial_pose: {x: -6.0, y: -1.0, yaw: 3.14159}`)
     # — we differ only in yaw.
     # VALUE = where the robot ACTUALLY STANDS once it is up, which is NOT where it was
-    # spawned (-6.0, -1.0, pi/2). The locomotion policy's activation transient walks the
-    # body ~0.97 m along its heading before it settles (measured 0.9436 m at yaw 0;
-    # 0.968 m at yaw pi/2 on the live sim: spawned (-6.0,-1.0) -> settled
-    # (-6.051,-0.032), yaw 1.564).
+    # spawned (-6.0, -1.0, pi/2). The locomotion policy's activation transient moves the
+    # body before it settles, and HOW FAR is a property of the policy:
+    #   robust_creep (2026-09-02) + the harness's trained-stance start (2026-09-03):
+    #     the POSITION transient is GONE — spawned (-6.0,-1.0) -> settled (-5.97,-0.96),
+    #     i.e. 0.05 m. What remains is HEADING: under a zero command this policy turns
+    #     slowly left and then stops — +0.21 rad by 30 s, +0.41 rad asymptotically
+    #     (~150 s), measured live under a 10 Hz zero /cmd_vel. That is the policy, not
+    #     the harness: its training dedicates 1 % of environments to standing still.
+    #     The VALUE below is the pose at ~30 s = where the robot stands when the app is
+    #     brought up right after the sim, as compose does. Bring the app up much later
+    #     and the true heading is nearer 1.98; that 0.2 rad sits inside amcl's own
+    #     initial yaw spread (initial_cov_aa default 0.0685 rad^2 = 0.26 rad), and the
+    #     first laser update corrects heading sharply — the scan-vs-map likelihood of
+    #     the live scan peaks within 0.05 m and 0.000 rad of ground truth (measured).
+    #   HISTORY: before the trained-stance start, the USD-pose drop cost a 0.66 m lunge
+    #     on this policy, the filter was seeded a robot-length off, and the patrol
+    #     mission failed with the target confirmed ~0.8 m away.
+    #   flat policy (before): ~0.97 m straight (0.9436 m at yaw 0; 0.968 m at yaw pi/2:
+    #     settled (-6.051,-0.032), yaw 1.564).
     #
     # WHY THAT MATTERS (measured live): the transient happens BEFORE amcl is even up, so
     # amcl sees no odom motion afterwards, never triggers a filter update
@@ -116,13 +146,13 @@ amcl:
     # 6 recovery rounds closing a gap that was never real.
     #
     # ⚠ ANYONE PUBLISHING /initialpose OVERRIDES THIS. Seed the SETTLED pose, not the
-    # spawn pose, or the same ~0.97 m offset comes straight back.
+    # spawn pose, or the settle offset comes straight back.
     set_initial_pose: true
     initial_pose:
-      x: -6.051
-      y: -0.032
+      x: -5.970
+      y: -0.960
       z: 0.0
-      yaw: 1.564
+      yaw: 1.780
 
 bt_navigator:
   ros__parameters:
@@ -202,6 +232,9 @@ controller_server:
       #       cmd 0.000 -> 0.0005 m/s   cmd 0.035 -> 4.6 %   cmd 0.05 -> 5.8 %
       #       cmd 0.100 -> 22.7 %       cmd 0.150 -> 16.6 %  cmd 0.20 -> 48.6 %
       #       cmd 0.300 -> 74.6 %       (C2b measured cmd 0.5 -> 99 % in a clear lane)
+      #     robust_creep policy (2026-09-02, current), same kind of sweep on the live sim:
+      #       cmd 0.10 -> 6.9 %   cmd 0.15 -> 11.4 %   cmd 0.20 -> 13.4 %   cmd 0.25 -> 41.9 %
+      #       cmd 0.30 -> 73.3 %  cmd 0.40 -> 96.8 %   — the dead zone did NOT move.
       #     i.e. below ~0.2 m/s the gait produces almost no translation. The robot then
       #     stands still, the progress checker fails every 10 s, and the recovery ladder
       #     runs forever. Six such rounds were logged before the goal finally completed.
@@ -220,7 +253,16 @@ controller_server:
       time_steps: 56
       model_dt: 0.05
       batch_size: 2000
-      ax_max: 3.0
+      # go2 DELTA 13 (see header): stock 3.0 -> 8.0. This bounds the change of the
+      # COMMAND per model step (ax_max * model_dt = 0.4 m/s here), measured from the
+      # robot's current speed — so with a plant that has a dead zone it is also the
+      # size of the first step out of standstill. At 3.0 that first step is 0.15 m/s,
+      # which this policy executes at ~11 % (0.017 m/s), so the measured speed never
+      # rises and MPPI reissues the same command forever. Live evidence, chair patrol:
+      # cmd 0.11 m/s / actual 0.002 m/s held for 60 s until the approach timed out.
+      # With 8.0 the same approach walks at a commanded 0.494 m/s / actual 0.527 m/s.
+      # Braking is left at stock (ax_min -3.0): stopping was never the problem.
+      ax_max: 8.0
       ax_min: -3.0
       ay_max: 3.0
       ay_min: -3.0

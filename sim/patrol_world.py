@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/isaac-sim/python.sh
 """patrol_world.py — the patrol app's own Isaac Sim world, in one file.
 
 Run it inside the Isaac Sim 5.1.0 container and it stands up the world this app
@@ -94,11 +94,14 @@ PROPS_ROOT = "/World/props"
 #: Drop height of the robot's base at spawn, metres. MEASURED: from z = 0.40 the
 #: settle slides the base 0.117 m before the policy has any say; from z = 0.32 it
 #: slides 0.0197 m and pitches +0.013 rad. The settled standing height is
-#: 0.279–0.288 m, so 0.32 is a 3–4 cm drop — enough to guarantee floor contact
+#: 0.279–0.288 m with the flat policy (the robust_creep policy of 2026-09-02 stands
+#: taller, 0.378–0.385 m), so 0.32 is a 3–4 cm drop — enough to guarantee floor contact
 #: (a robot spawned exactly at stance height can start interpenetrating the
 #: floor) without a launch. The stance itself is NOT written at boot: the robot
 #: falls from here in its USD pose and the policy's first joint targets stand it
-#: up, which is also what the ~0.97 m forward lunge at policy activation is.
+#: up. NOTE (2026-09-03): the robot is no longer dropped in the USD's own joint pose —
+#: PolicyLoop.bind writes the policy's trained stance first, which is what removed the
+#: metre-scale activation lunge (0.97 m flat / 0.66 m robust_creep -> 0.05 m).
 SPAWN_Z = 0.32
 
 #: 200 Hz physics / 50 Hz render. The physics step is a property of the trained
@@ -258,7 +261,8 @@ DEPTH_ENCODING = "32FC1"
 #: Lidar mount, base_link -> lidar, metres. MEASURED with 3200-beam scans in this
 #: warehouse: at z = 0.00 the trunk occludes the sensor completely (0 valid
 #: returns of 3200), at z = +0.15 it clears the trunk by 6 cm and returns 2723,
-#: and the scan plane then sits ~0.43 m above the floor while standing — low
+#: and the scan plane then sits ~0.43 m (flat policy) / ~0.53 m (robust_creep,
+#: 2026-09-02 — it stands 0.38 m tall) above the floor while standing — low
 #: enough that a 0.877 m chair and a 1.73 m person are both in it.
 LIDAR_MOUNT_XYZ = (0.0, 0.0, 0.15)
 #: 3200 beams, 360°, 0.1125° resolution, 10 Hz, range [0.05, 30] m. Chosen by
@@ -699,7 +703,7 @@ class PolicyLoop:
     def load(self) -> None:
         """TorchScript-load the policy onto the CPU, single-threaded.
 
-        A 3x128 MLP at 50 Hz costs nothing on a CPU core, and both alternatives
+        A 512-256-128 MLP at 50 Hz costs nothing on a CPU core, and both alternatives
         cost determinism: multi-threaded reductions can reassociate, and a GPU
         forward adds a host<->device sync inside the physics callback.
         """
@@ -734,8 +738,23 @@ class PolicyLoop:
         articulation.get_articulation_controller().set_gains(
             kps=[SIM_DRIVE_STIFFNESS] * len(names), kds=[SIM_DRIVE_DAMPING] * len(names)
         )
+        # Start the robot in the state the policy was TRAINED to start from: the
+        # default stance, at rest. The training reset writes exactly this
+        # (params/env.yaml `init_state.joint_pos` = the stance in policy_meta.yaml,
+        # `joint_vel` = 0), and the USD ships a different joint pose entirely.
+        #
+        # MEASURED (2026-09-03, robust_creep policy, live): dropping the USD pose and
+        # letting the policy stand the robot up costs a 0.66 m LUNGE along the heading
+        # before it settles; writing the stance first costs 0.05 m. The lunge is not
+        # cosmetic — it happens before the app's AMCL is even running, so the filter is
+        # seeded a robot-length away from the truth (the earlier flat policy lunged
+        # 0.97 m and this file's spawn/AMCL comments were built around that number).
+        # Two spawn yaws that made the robot FALL during the USD-pose stand-up now
+        # stand normally.
+        articulation.set_joint_positions(scatter(self.meta.default_joint_pos, self._dof_index))
+        articulation.set_joint_velocities([0.0] * len(names))
         self._articulation = articulation
-        print(f"{LOG} policy bound to {len(names)} joints; sim drive gains zeroed")
+        print(f"{LOG} policy bound to {len(names)} joints; sim drive gains zeroed; trained stance written")
 
     def set_command(self, vx: float, vy: float, wz: float) -> None:
         """Latch the base velocity command (/cmd_vel -> observation [9:12]).

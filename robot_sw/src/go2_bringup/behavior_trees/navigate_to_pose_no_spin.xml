@@ -20,6 +20,14 @@
   to the wiring: the command slots are in the right order, the policy does react to wz,
   and the angular observation matches ground-truth yaw rate.
 
+  STILL TRUE? NO, AND THE FILE IS KEPT ANYWAY (2026-09-03). The locomotion policy was
+  replaced (robot_sw/models/locomotion/policy_meta.yaml) and the new one executes an
+  in-place yaw at 70-93 % of command, so Spin would now do something. It is left out
+  because nothing measured needs it: with the app's other 2026-09-03 fixes the patrol
+  mission and plain navigation both pass without any recovery firing. Restoring the
+  stock tree is available headroom, and it is a behaviour change to be measured on its
+  own, not a correction of this file.
+
   So `Spin 1.57` is a recovery this robot cannot perform: it would burn its whole
   `time_allowance` (BT default 10 s) rotating ~0.47 rad and then fail anyway, delaying
   the recoveries that DO work here (costmap clearing, wait, back-up) by that much every

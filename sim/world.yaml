@@ -25,11 +25,13 @@ spawn:
   # ⚠ PAIRED WITH THE APP'S AMCL PRIOR — change both together.
   # robot_sw/src/go2_bringup/params/nav2_params.yaml sets `amcl.initial_pose`,
   # and that value is NOT a copy of this one: it is where the robot actually
-  # STANDS once the world is up. Activating the locomotion policy walks the body
-  # ~0.97 m along its own heading before it settles (measured live: declared
-  # (-6.0, -1.0) yaw pi/2 -> settled (-6.051, -0.032) yaw 1.564), and that
-  # happens before AMCL is even running, so AMCL never sees the motion. Move the
-  # spawn and the prior has to be re-derived from the new settled pose.
+  # STANDS once the world is up. Since the harness starts the robot in the policy's
+  # TRAINED stance (sim/patrol_world.py, PolicyLoop.bind) the two are nearly the same
+  # place: measured live, declared (-6.0, -1.0) yaw pi/2 -> settled (-5.99, -0.97),
+  # i.e. 0.05 m. HEADING is the part that still moves: this locomotion policy turns
+  # slowly left under a zero command, +0.21 rad by 30 s and +0.41 rad by ~150 s, and
+  # AMCL is seeded before that finishes. Move the spawn OR swap the policy and the
+  # prior has to be re-derived from the new settled pose.
   x: -6.0
   y: -1.0
   yaw: 1.5708  # pi/2 — facing +Y, i.e. up the patrol lane
