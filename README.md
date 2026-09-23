@@ -187,7 +187,7 @@ docker run --rm --gpus all \
   -v "$PWD/verify/out:/cv/checkout/verify/out:rw" \
   -w /cv/checkout --shm-size=8g \
   --entrypoint /bin/sh \
-  ghcr.io/yongjunshin/cv-infra-user-go2/go2-verify@sha256:PINNED_AFTER_FIRST_BUILD \
+  ghcr.io/yongjunshin/cv-infra-user-go2/go2-verify@sha256:0abea884891a712f4aecdf6719edcb972e890c5ab8acd30b52f6017e91ea6d6e \
   -lc 'exec "$0" "$@"' verify/sim \
     --target=chair --start_x=-6.0 --start_y=-1.0 --start_yaw=1.5708 \
     --box_count=1 --desk_count=0

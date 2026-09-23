@@ -57,7 +57,7 @@ jobs:
       oracle_script: verify/oracle.py
       # REQUIRED, and a digest — the platform refuses a bare tag. Built from
       # verify/Dockerfile with the repository root as context; see the ⚠ above.
-      sim_image: ghcr.io/yongjunshin/cv-infra-user-go2/go2-verify@sha256:PINNED_AFTER_FIRST_BUILD
+      sim_image: ghcr.io/yongjunshin/cv-infra-user-go2/go2-verify@sha256:0abea884891a712f4aecdf6719edcb972e890c5ab8acd30b52f6017e91ea6d6e
       pict_k: 2
       repeats: 1
       # One case at a time: every container time-shares the one GPU, and an Isaac world
