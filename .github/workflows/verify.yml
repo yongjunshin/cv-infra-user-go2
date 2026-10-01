@@ -6,14 +6,22 @@
 # case runs in, and the script that turns the output into a verdict. The platform is
 # consumed as a contract + a workflow ref ONLY.
 #
+# WHAT IT VERIFIES: the app's /patrol mission — "find a <class>" — as it is. Six axes
+# (start / target class / where that target hides, or nowhere / a decoy of the other class /
+# two desk slots) expand at k=2 into 15 cases. The harness (verify/sim.py) builds the case's
+# world, launches the app, sends ONE goal naming a class and watches; the oracle checks
+# that a present target was found at the right place within a distance-scaled allowance,
+# and that an absent one was never reported. Each case's artifact also carries two top-view
+# renders of the warehouse (set-up, and the walk drawn over it).
+#
 # The called workflow runs on the self-hosted GPU workstation and posts the result back
 # onto this PR as a Check Run + a sticky comment + artifacts.
 #
 # ⚠ `sim_image` IS THIS REPOSITORY'S OWN IMAGE, not the stock Isaac one. cv-infra starts
 # exactly ONE container per case, so the simulator and the ROS 2 app have to live in the
 # same image: verify/Dockerfile bakes robot_sw/ on top of the pinned Isaac Sim 5.1.0
-# digest. sim/patrol_world.py and the locomotion policy are NOT baked — they are read
-# from the read-only checkout at run time.
+# digest. verify/sim.py, sim/patrol_world.py and the locomotion policy are NOT baked —
+# they are read from the read-only checkout at run time.
 #
 # THEREFORE: changing anything under robot_sw/ means rebuild -> push -> re-pin the digest
 # below, IN THE SAME PR. The image is the app; a PR that edits a node and leaves the
@@ -46,9 +54,9 @@ jobs:
       contents: read
     uses: yongjunshin/cv-infra-workspace/.github/workflows/verify.yml@main
     with:
-      # `verify/sim --target=... --start_x=...` — a bash entrypoint; the shebang, not the
-      # platform, picks the interpreter.
-      sim_script: verify/sim
+      # `verify/sim.py --start=S1 --target=chair …` — an Isaac standalone script; its
+      # shebang (/isaac-sim/python.sh), not the platform, picks the interpreter.
+      sim_script: verify/sim.py
       sim_input_space: verify/space.pict
       # Must exist in the checkout (that is what verify/out/.gitkeep is for): the platform
       # mounts the case's own output directory over this path, read-write.
@@ -63,8 +71,8 @@ jobs:
       # One case at a time: every container time-shares the one GPU, and an Isaac world
       # plus a nav2 stack is not a workload two of which have been measured side by side.
       concurrency: 1
-      # 3 hours for 12 cases. MEASURED 2026-09-23 on etri6000, one case, COLD cache:
-      # 167 s wall (/clock after 141 s incl. the asset download, app up 6 s later,
-      # mission 17 s, teardown 3 s). The ceiling is the 300 s mission timeout plus a cold
-      # boot, i.e. ~8 min worst case per case — 12 of those still fit with headroom.
+      # 3 hours for 15 cases. MEASURED 2026-10-01 on etri6000, warm cache: a case whose
+      # target is found early took 49 s wall; one that searches the app's whole 180 sim-s
+      # budget took 222 s. The harness watches at most 240 sim-s, so a case is ~5 min at
+      # worst plus a cold first boot — 15 of those fit with headroom.
       budget: 10800

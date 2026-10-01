@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""verify/oracle.py — turn one case's evidence into a verdict.
+"""verify/oracle.py — turn one search case's evidence into a verdict.
 
-cv-infra runs this right after `verify/sim`, in the SAME image, with the SAME argv, no
+cv-infra runs this right after `verify/sim.py`, in the SAME image, with the SAME argv, no
 GPU, and both the checkout and verify/out/ mounted read-only. The last line of stdout
 that parses as a flat JSON object is the case's verdict, and the platform reads TYPES,
 not names:
@@ -11,112 +11,111 @@ not names:
     null   unknown   — not a failure, just excluded from the ratio
     str    a note
 
-Each bool below has exactly ONE evidence file, so a false answer names the thing that
-did not happen:
+THE QUESTION: the app was asked for ONE class. Did it answer right, and in time?
 
-    sim_booted       verify/out/sim.log      the world printed its ready banner
-    app_ready        verify/out/app.log      go2_patrol_manager started serving /patrol
-    action_succeeded verify/out/mission.txt  the /patrol goal finished SUCCEEDED
-    target_found     verify/out/mission.txt  the result says the target was found
+  target PRESENT (--hide=H1..H4):
+    report_correct  it said found, and the position it reported is within REPORT_TOL_M of
+                    where the target really stands (a decoy or a hallucination elsewhere
+                    is not a correct report)
+    in_time         and it said so within the allowance for that distance:
+                    ALLOW_BASE_S + ALLOW_PER_M_S * (straight-line start -> target, m)
+  target ABSENT (--hide=none; a decoy of the OTHER class may be standing there):
+    report_correct  it never said found — "there is a chair" when there is none is the
+                    one answer that must never come
+    in_time         and it kept looking for at least ABSENT_WATCH_S before giving up (a
+                    mission that aborts after 5 s has not searched for anything)
 
-A MISSING FILE IS A false, NOT A CRASH. `verify/sim` exits 0 whenever the goal was sent,
-so a case that reaches this script with no mission.txt is a case the sim never got to —
-which is exactly a failing check, and a traceback would only turn it into an ERROR
-(no verdict at all). Hence: never raise, always print one line, exit 0.
+The allowance and the watch time are THE TEST'S REQUIREMENT — what this repository asks
+of the app — not a measurement of it. Times are sim seconds from goal acceptance to the
+answer, read from run.json (the harness stamps them off the simulator's own clock).
+
+A missing run.json means the harness never got as far as a mission: that is the ERROR
+lane (exit 1, no verdict), not a failing robot.
 
 stdlib only, so this also runs on a plain laptop python3.
 """
 
 import argparse
+import csv
 import json
+import math
 import os
-import re
 import sys
 
 OUT = os.path.join("verify", "out")
-SIM_LOG = os.path.join(OUT, "sim.log")
-APP_LOG = os.path.join(OUT, "app.log")
-MISSION_TXT = os.path.join(OUT, "mission.txt")
 RUN_JSON = os.path.join(OUT, "run.json")
+TRAJECTORY = os.path.join(OUT, "trajectory.csv")
 
-# The world's own ready banner (sim/patrol_world.py, print_banner): "[patrol-world] ready
-# — the world is running." Matched on the ASCII half only, so the em dash cannot turn a
-# green case red over an encoding difference.
-SIM_READY = "the world is running"
-# go2_patrol_manager's constructor line: "go2_patrol_manager up: serving /patrol, ...".
-APP_READY = re.compile(r"go2_patrol_manager up: serving\s+/patrol")
-# `ros2 action send_goal --feedback` prints this verbatim when the server accepted the
-# goal and the goal terminated successfully.
-GOAL_SUCCEEDED = "Goal finished with status: SUCCEEDED"
-# The Patrol result's own `found` field, as the CLI renders it.
-TARGET_FOUND = re.compile(r"found:\s*true", re.IGNORECASE)
+ALLOW_BASE_S = 45.0
+ALLOW_PER_M_S = 8.0  # ~3x the time the robot needs to walk the straight line at 0.4 m/s
+ABSENT_WATCH_S = 150.0
+REPORT_TOL_M = 1.0
 
 
 def parse_args() -> argparse.Namespace:
-    """The same six axes as verify/sim — the platform replays the whole argv.
-
-    Only `--target` is read (it goes in the note); the rest exist so that an axis is
-    never silently dropped on one side of the pair.
-    """
-    p = argparse.ArgumentParser(description="verdict for one go2 patrol case")
-    p.add_argument("--target", required=True)
-    p.add_argument("--start_x", required=True)
-    p.add_argument("--start_y", required=True)
-    p.add_argument("--start_yaw", required=True)
-    p.add_argument("--box_count", required=True)
-    p.add_argument("--desk_count", required=True)
+    """The same axes as verify/sim.py — the platform replays the whole argv."""
+    p = argparse.ArgumentParser(description="verdict for one go2 search case")
+    for axis in ("start", "target", "hide", "decoy", "slot_a", "slot_b"):
+        p.add_argument(f"--{axis}", required=True)
     args, _unknown = p.parse_known_args()
     return args
 
 
-def read(path: str, missing: list) -> str:
-    """File contents, or "" with the path recorded — no exception ever escapes."""
+def path_length(path: str):
     try:
-        with open(path, encoding="utf-8", errors="replace") as handle:
-            return handle.read()
+        with open(path, newline="") as handle:
+            rows = list(csv.DictReader(handle))
     except OSError:
-        missing.append(path)
-        return ""
-
-
-def mission_wall_s(missing: list):
-    """`phases.mission_s` out of run.json, or None when it is not a number.
-
-    None is the platform's "unknown", not a failure: a case that never sent a goal has
-    no mission duration to report, and reporting 0 would poison the metric's baseline.
-    """
-    text = read(RUN_JSON, missing)
-    if not text:
         return None
-    try:
-        value = json.loads(text)["phases"]["mission_s"]
-    except (ValueError, KeyError, TypeError):
-        return None
-    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    return sum(
+        math.hypot(float(b["x"]) - float(a["x"]), float(b["y"]) - float(a["y"]))
+        for a, b in zip(rows, rows[1:], strict=False)
+    )
 
 
 def main() -> int:
     args = parse_args()
-    missing: list = []
+    try:
+        with open(RUN_JSON) as handle:
+            run = json.load(handle)
+    except (OSError, ValueError) as exc:
+        print(f"ERROR cannot read the case output: {exc}", file=sys.stderr, flush=True)
+        return 1
 
-    sim_log = read(SIM_LOG, missing)
-    app_log = read(APP_LOG, missing)
-    mission = read(MISSION_TXT, missing)
-    wall_s = mission_wall_s(missing)
+    outcome = run.get("outcome") or {}
+    found = outcome.get("found") is True
+    mission_s = outcome.get("mission_s")
+    target = next((ob for ob in run.get("objects") or [] if ob.get("role") == "target"), None)
+    start = run.get("start") or {}
 
-    note = f"target={args.target}"
-    if missing:
-        note += "; missing evidence: " + ", ".join(missing)
-    elif mission:
-        # The tail is what a developer looks at first: the result block the CLI printed.
-        note += "; mission tail: " + " ".join(mission.strip().splitlines()[-3:])[:300]
+    if target is not None:
+        distance = math.hypot(target["x"] - start["x"], target["y"] - start["y"])
+        allowed = ALLOW_BASE_S + ALLOW_PER_M_S * distance
+        error = outcome.get("report_error_m")
+        report_correct = found and error is not None and error <= REPORT_TOL_M
+        in_time = found and mission_s is not None and mission_s <= allowed
+        expect = f"present at {args.hide}, {distance:.1f} m away, allowed {allowed:.0f} s"
+    else:
+        distance = allowed = error = None
+        report_correct = not found
+        in_time = not found and mission_s is not None and mission_s >= ABSENT_WATCH_S
+        expect = f"absent, must not be reported for {ABSENT_WATCH_S:.0f} s"
 
+    answer = "FOUND" if found else "not found"
+    note = (
+        f"{args.start}: find {args.target} ({expect}, decoy {args.decoy}) -> {answer}"
+        + (f" after {mission_s:.1f} s" if mission_s is not None else "")
+        + (f", reported {error:.2f} m off" if error is not None else "")
+        + f"; ended by {outcome.get('end')}; app said: {outcome.get('message')}"
+    )
     verdict = {
-        "sim_booted": SIM_READY in sim_log,
-        "app_ready": bool(APP_READY.search(app_log)),
-        "action_succeeded": GOAL_SUCCEEDED in mission,
-        "target_found": bool(TARGET_FOUND.search(mission)),
-        "mission_wall_s": wall_s,
+        "report_correct": bool(report_correct),
+        "in_time": bool(in_time),
+        "mission_s": mission_s,
+        "allowed_s": None if allowed is None else round(allowed, 1),
+        "target_dist_m": None if distance is None else round(distance, 3),
+        "report_error_m": error,
+        "path_len_m": None if (length := path_length(TRAJECTORY)) is None else round(length, 3),
         "note": note,
     }
     print(json.dumps(verdict))

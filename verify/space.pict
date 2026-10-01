@@ -1,37 +1,36 @@
-# verify/space.pict — this repository's input space, in Microsoft PICT's own syntax.
+# verify/space.pict — go2 "find what you are asked for, and only that", in PICT syntax.
 #
-# cv-infra expands this into a covering array and runs verify/sim once per row,
-# `repeats` times. It reads names and values; what any of them MEAN is ours.
+# One row = one case. Every axis is a flag of verify/sim.py (`--name=value`, text) and the
+# harness owns what the values MEAN. cv-infra expands this with PICT (k=2), runs the harness
+# once per row inside verify/Dockerfile's image, collects verify/out/ (including the two
+# top-view pictures), and reads verify/oracle.py's flat JSON by TYPE. PICT reads a trailing
+# `# …` on a value line as part of the value, so every comment sits on its own line.
 #
-# AXIS NAME -> ARGV. Every axis becomes one flag on verify/sim: `target: chair` is
-# handed to the script as `--target=chair`, in the order declared here. So a name must
-# match verify/sim's parser exactly and must be CLI-flag-safe (^[A-Za-z][A-Za-z0-9_-]*$,
-# and never `help`/`h`). Values travel as TEXT — verify/sim writes them straight into
-# verify/out/world.yaml and verify/oracle.py re-reads them off the same argv.
+# THE LAYOUT (map frame = world frame, metres; see verify/sim.py):
 #
-# THIS FILE IS THE COMMITTED ARRAY. The covering array is derived from this file at every
-# run, and each case is identified by a hash of its own axis assignment, so a baseline
-# follows a case across commits only as long as its values are untouched. Editing a value
-# (or a name) retires the old case and starts the new one without a baseline — a rename
-# is a deliberate act, not a formatting change.
+#   H3 (-5, 10)                    H4 (3, 13)
+#                 decoy spot (0, 8.5)
+#                                        H2 (4, 6)
+#        H1 (-3, 4)
+#   desk a (-6, 3)       desk b (2, 3)            (each 2.8 m wide when present)
+#   S1 (-6, -1)          S2 (0, 1.5)         S3 (6, 0)        facing +y
 #
-# SIZE. Six axes = 2 * 3 * 3 * 3 * 3 * 2 = 324 combinations; the constraint at the bottom
-# removes two thirds of the chair half. Pairwise (k=2) covers it in **12 rows**, measured
-# 2026-09-22 with the pinned PICT build (`pict verify/space.pict /o:2` -> 12 data rows).
-# One case measured 167 s wall on a cold cache (2026-09-23, etri6000; see the budget
-# comment in .github/workflows/verify.yml) — the workflow's `budget: 10800` is sized
-# against the 300 s mission ceiling plus a cold boot, not against that best case.
+# The robot is asked for ONE class and is never told where anything is.
 #
-# PICT picks the CELL: it is discrete and combinatorial, so it answers "which combinations
-# must be tried". "How much does one cell vary" is what `repeats` answers instead.
+# CASE IDENTITY is a hash of a row's own assignment: a baseline follows a case across
+# commits only as long as its values are untouched.
 
-target:      person, chair
-start_x:     -6.3, -6.0, -5.7
-start_y:     -1.3, -1.0, -0.7
-start_yaw:   1.4208, 1.5708, 1.7208
-box_count:   0, 1, 2
-desk_count:  0, 1
+start:   S1, S2, S3
 
-# A chair only reads as `chair` from the front (0.834 front / 0 behind), so its
-# bearing is pinned; a standing person reads from every angle measured.
-IF [target] = "chair" THEN [start_yaw] = 1.5708;
+# The class the /patrol goal names.
+target:  chair, person
+
+# Where an object of THAT class stands — or `none`: it is not in the warehouse.
+hide:    H1, H2, H3, H4, none
+
+# An object of the OTHER class at the decoy spot, or nothing.
+decoy:   none, present
+
+# Obstacles: a desk across the floor, or nothing.
+slot_a:  empty, desk
+slot_b:  empty, desk
