@@ -137,6 +137,13 @@ APP_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 APP_UP = "go2_patrol_manager up: serving /patrol"
 AMCL_POSE_TAKEN = "initialPoseReceived"  # nav2 AMCL, once at activation (its own prior) + once per /initialpose
 GOAL_ACCEPTED = "Goal accepted"
+# nav2's two lifecycle managers each print this once their nodes are up; the goal waits for
+# BOTH. MEASURED (CI run 36816876742): a goal sent while navigation was still activating
+# was aborted 16 ms after acceptance as "no perception after 5 s" — the manager's sim clock
+# had not settled. An operator sends a mission to an app that is up, so the harness does.
+NAV_ACTIVE = "Managed nodes are active"
+NAV_MANAGERS = 2
+SETTLE_S = 2.0  # sim seconds after the app is fully up, before the goal
 
 # The top-view camera — the same rig as the carter example (same building), MEASURED
 # again in this world 2026-10-01: markers at (+-7, 1), (+-7, 11), (0, 6) land on the
@@ -499,7 +506,7 @@ def run(pw, simulation_app, args: argparse.Namespace) -> None:
             if t >= next_poll:
                 next_poll = t + POLL_PERIOD_S
                 text = read_text(OUT_APP_LOG)
-                if APP_UP in text and AMCL_POSE_TAKEN in text:
+                if APP_UP in text and AMCL_POSE_TAKEN in text and text.count(NAV_ACTIVE) >= NAV_MANAGERS:
                     break
             if app.poll() is not None:
                 raise RuntimeError(f"the app exited (rc {app.returncode}) before serving /patrol — see {OUT_APP_LOG}")
@@ -530,6 +537,9 @@ def run(pw, simulation_app, args: argparse.Namespace) -> None:
                 next_pub = t + INITIAL_POSE_PERIOD_S
             t = step()
         log(f"initial pose taken at sim {t:.1f} s: {record['initial_pose']}")
+        settle_until = t + SETTLE_S
+        while t < settle_until:
+            t = step()
 
         # ---- the mission: ONE goal, naming a class, never a place -----------------------
         goal = start_process(GOAL_CMD, OUT_MISSION, args.target)
@@ -541,17 +551,20 @@ def run(pw, simulation_app, args: argparse.Namespace) -> None:
                 x, y, yaw = pose()
                 samples.append((round(t, 3), round(x, 4), round(y, 4), round(yaw, 4)))
                 next_sample = t + TRAJ_PERIOD_S
-            if goal.poll() is not None:
-                end = "answered"
-                break
-            if accepted_t is None and t >= next_poll:
+            # Acceptance is checked BEFORE the exit: a mission answered within one poll
+            # period must still get its acceptance time (MEASURED: it did not, once).
+            finished = goal.poll() is not None
+            if accepted_t is None and (finished or t >= next_poll):
                 next_poll = t + POLL_PERIOD_S
                 if GOAL_ACCEPTED in read_text(OUT_MISSION):
                     accepted_t = t
                     log(f"goal accepted at sim {t:.1f} s")
-                elif time.monotonic() - wall0 > ACCEPT_TIMEOUT_S:
+                elif not finished and time.monotonic() - wall0 > ACCEPT_TIMEOUT_S:
                     end = "not_accepted"
                     break
+            if finished:
+                end = "answered"
+                break
             if accepted_t is not None and t - accepted_t >= WATCH_MAX_S:
                 break
             if app.poll() is not None:

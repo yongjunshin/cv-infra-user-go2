@@ -139,7 +139,7 @@ argv로 넘기고, `verify/out`을 거두고, 오라클이 찍은 평평한 JSON
 | 파일 | 무엇 |
 |---|---|
 | `verify/Dockerfile` | **검증 이미지.** 핀된 Isaac Sim 5.1.0 위에 `robot_sw/`를 그대로 구워 올린다(`robot_sw/Dockerfile`의 레이어·핀을 그대로 재생). 케이스 컨테이너는 하나뿐이라 시뮬과 앱이 같은 이미지에 있어야 한다. **`verify/sim.py`·`sim/patrol_world.py`·보행 정책은 굽지 않는다** — 런타임에 체크아웃에서 읽는다. |
-| `verify/sim.py` | **표준 Isaac standalone 스크립트 = 테스트 하네스.** ① 앱의 세계 `sim/patrol_world.py`를 **고치지 않고 모듈로 import**해 창고·Go2·보행 정책·센서 리그를 그대로 세우고 ② 케이스의 물체(표적·미끼·책상)를 놓고 ③ 탑뷰 사진을 찍고 ④ 앱을 이미지의 기본 명령 그대로 띄우고(깨끗한 환경으로 — 아래 ⚠) ⑤ 로봇의 현재 위치를 `/initialpose`로 알려 준다(운영자가 RViz에서 "2D Pose Estimate"를 찍는 것과 같다) ⑥ `/patrol` 골을 보내고 ⑦ 답이 올 때까지(최대 240 sim-s) **실제 걸은 궤적만 기록**한다. 끝에 `verify/out/`에 `run.json`·`trajectory.csv`·`mission.txt`·`app.log`와 사진 두 장을 쓴다. 표적 위치는 앱에 절대 주지 않는다. |
+| `verify/sim.py` | **표준 Isaac standalone 스크립트 = 테스트 하네스.** ① 앱의 세계 `sim/patrol_world.py`를 **고치지 않고 모듈로 import**해 창고·Go2·보행 정책·센서 리그를 그대로 세우고 ② 케이스의 물체(표적·미끼·책상)를 놓고 ③ 탑뷰 사진을 찍고 ④ 앱을 이미지의 기본 명령 그대로 띄우고(깨끗한 환경으로 — 아래 ⚠) ⑤ 로봇의 현재 위치를 `/initialpose`로 알려 준다(운영자가 RViz에서 "2D Pose Estimate"를 찍는 것과 같다) ⑥ 앱이 **완전히 뜬 뒤**(nav2 lifecycle 두 개 모두 active + 2 s) `/patrol` 골을 보내고 ⑦ 답이 올 때까지(최대 240 sim-s) **실제 걸은 궤적만 기록**한다. 끝에 `verify/out/`에 `run.json`·`trajectory.csv`·`mission.txt`·`app.log`와 사진 두 장을 쓴다. 표적 위치는 앱에 절대 주지 않는다. |
 | `verify/space.pict` | **입력 공간**(PICT 문법). 축 6개(`start`·`target`·`hide`·`decoy`·`slot_a`·`slot_b`) = `verify/sim.py`의 플래그. k=2에서 **15 케이스**(그중 표적이 없는 케이스 3개). |
 | `verify/oracle.py` | **판정.** 같은 이미지·같은 argv로(GPU 없이) 돌며 `run.json`·`trajectory.csv`를 읽고 평평한 JSON 한 줄을 낸다. stdlib만 쓴다. |
 | `.github/workflows/verify.yml` | 잡 하나(`uses: …@main`)와 `with:` 입력 9개. 이 저장소가 유지하는 통합 표면 전부. |
